@@ -1,17 +1,23 @@
 /* 声を出しながら、ちらっと見るだけで分かること。文字は大きく、要素は少なく。 */
 
 :root {
-  --bg: #12110f;
-  --surface: #1c1a17;
-  --line: #2e2a25;
-  --text: #f2ede6;
-  --dim: #9a9086;
-  --accent: #e8734a;
-  --ok: #7fb069;
+  /* 純白は長時間の読みで眼が疲れるため、黄味を抑えた暖かい紙色。
+     文字も純黒にせず、暖かいチャコールにする。 */
+  --bg: #faf6ef;
+  --surface: #f2ebe0;
+  --line: #dccfbc;
+  --text: #2c2724;
+  --dim: #6b6055;
+  /* 図形・ボタン用。小さい文字には --accent-ink を使う（明るい背景では
+     もとの #e8734a はコントラスト比 2.8 で読めない）。 */
+  --accent: #b0451d;
+  --accent-ink: #8f3a19;
+  --on-accent: #fff8f0;
+  --ok: #4e7a3c;
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
 
-  color-scheme: dark;
+  color-scheme: light;
   font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Noto Sans JP', system-ui,
     sans-serif;
 }
@@ -74,7 +80,7 @@ button {
 
 .start {
   background: var(--accent);
-  color: #1a0d06;
+  color: var(--on-accent);
   border-radius: 20px;
   padding: 28px 20px;
   display: flex;
@@ -82,7 +88,7 @@ button {
   gap: 6px;
   align-items: center;
   font-weight: 700;
-  box-shadow: 0 10px 30px rgba(232, 115, 74, 0.22);
+  box-shadow: 0 8px 24px rgba(176, 69, 29, 0.24);
 }
 
 .start-main {
@@ -112,7 +118,7 @@ button {
 
 .chip.on {
   border-color: var(--accent);
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 .chip.flat {
@@ -227,7 +233,7 @@ button {
 .hint {
   margin: 2px 0 0;
   font-size: 13px;
-  color: var(--accent);
+  color: var(--accent-ink);
 }
 
 .stage-head-right {
@@ -271,7 +277,6 @@ button {
   font-size: 19px;
   line-height: 1.45;
   color: var(--dim);
-  opacity: 0.45;
   transition: all 0.25s ease;
 }
 
@@ -284,7 +289,7 @@ button {
 }
 
 .ten li.past {
-  opacity: 0.25;
+  color: #b9ab97;
 }
 
 .ten li.now {
@@ -323,7 +328,8 @@ button {
 
 .ring-track {
   fill: none;
-  stroke: var(--line);
+  /* 紙の上では枠線色だと消えてしまい、「残りどれだけか」が読めなくなる。 */
+  stroke: rgba(176, 69, 29, 0.16);
   stroke-width: 10;
 }
 
@@ -424,7 +430,7 @@ button {
 
 .primary {
   background: var(--accent);
-  color: #1a0d06;
+  color: var(--on-accent);
   border-radius: 14px;
   padding: 16px;
   font-size: 17px;
