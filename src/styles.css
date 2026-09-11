@@ -1,0 +1,512 @@
+/* 声を出しながら、ちらっと見るだけで分かること。文字は大きく、要素は少なく。 */
+
+:root {
+  --bg: #12110f;
+  --surface: #1c1a17;
+  --line: #2e2a25;
+  --text: #f2ede6;
+  --dim: #9a9086;
+  --accent: #e8734a;
+  --ok: #7fb069;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+
+  color-scheme: dark;
+  font-family: -apple-system, BlinkMacSystemFont, 'Hiragino Sans', 'Noto Sans JP', system-ui,
+    sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  overscroll-behavior: none;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  border: none;
+  background: none;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+
+.screen {
+  min-height: 100dvh;
+  padding: calc(16px + var(--safe-top)) 16px calc(16px + var(--safe-bottom));
+  max-width: 560px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ---------- 待機画面 ---------- */
+
+.idle {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  flex: 1;
+}
+
+.idle-head h1 {
+  margin: 8px 0 4px;
+  font-size: 28px;
+  letter-spacing: 0.02em;
+}
+
+.sub {
+  margin: 0;
+  color: var(--dim);
+  font-size: 14px;
+}
+
+.start {
+  background: var(--accent);
+  color: #1a0d06;
+  border-radius: 20px;
+  padding: 28px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: center;
+  font-weight: 700;
+  box-shadow: 0 10px 30px rgba(232, 115, 74, 0.22);
+}
+
+.start-main {
+  font-size: 30px;
+}
+
+.start-sub {
+  font-size: 13px;
+  font-weight: 500;
+  opacity: 0.75;
+}
+
+.idle-meta {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.chip {
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 13px;
+  color: var(--dim);
+  background: var(--surface);
+}
+
+.chip.on {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.chip.flat {
+  color: var(--ok);
+  border-color: transparent;
+}
+
+.log h2 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--dim);
+  margin: 0 0 12px;
+  line-height: 1.5;
+}
+
+.log ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.log li {
+  display: grid;
+  grid-template-columns: 48px auto 1fr;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-top: 1px solid var(--line);
+  font-size: 14px;
+}
+
+.log-date {
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.log-note {
+  color: var(--dim);
+  font-size: 13px;
+}
+
+.empty {
+  color: var(--dim);
+  font-size: 14px;
+  margin: 0;
+}
+
+.dots {
+  display: inline-flex;
+  gap: 5px;
+  align-items: center;
+}
+
+.dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: transparent;
+  display: inline-block;
+}
+
+.dot.on {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+/* ---------- 工程共通 ---------- */
+
+.stage {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  min-height: 0;
+}
+
+.stage-head {
+  position: relative;
+  padding-top: 10px;
+}
+
+.bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: var(--accent);
+  border-radius: 2px;
+  transform-origin: left;
+  /* 100ms ごとの更新をなめらかに見せる */
+  transition: transform 0.1s linear;
+}
+
+.stage-head-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.stage-head h2 {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.hint {
+  margin: 2px 0 0;
+  font-size: 13px;
+  color: var(--accent);
+}
+
+.stage-head-right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.clock {
+  font-size: 18px;
+  font-variant-numeric: tabular-nums;
+  color: var(--dim);
+}
+
+.stop {
+  color: var(--dim);
+  font-size: 13px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+/* ---------- 工程2: Q10音読 ---------- */
+
+.ten {
+  list-style: none;
+  counter-reset: q;
+  margin: 0;
+  padding: 0 0 40vh;
+  overflow-y: auto;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ten li {
+  counter-increment: q;
+  padding: 12px 14px;
+  border-radius: 12px;
+  font-size: 19px;
+  line-height: 1.45;
+  color: var(--dim);
+  opacity: 0.45;
+  transition: all 0.25s ease;
+}
+
+.ten li::before {
+  content: counter(q);
+  display: inline-block;
+  width: 22px;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.ten li.past {
+  opacity: 0.25;
+}
+
+.ten li.now {
+  opacity: 1;
+  color: var(--text);
+  background: var(--surface);
+  font-size: 22px;
+  font-weight: 600;
+}
+
+/* ---------- 工程3: 3問回答 ---------- */
+
+.stage-answer {
+  justify-content: flex-start;
+}
+
+.big-question {
+  font-size: 27px;
+  line-height: 1.4;
+  font-weight: 600;
+  margin: 8px 0 0;
+}
+
+.ring {
+  position: relative;
+  width: min(230px, 62vw);
+  margin: auto;
+  display: grid;
+  place-items: center;
+}
+
+.ring svg {
+  width: 100%;
+  display: block;
+}
+
+.ring-track {
+  fill: none;
+  stroke: var(--line);
+  stroke-width: 10;
+}
+
+.ring-fill {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 10;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.1s linear;
+}
+
+.ring-label {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+}
+
+.ring-label strong {
+  font-size: 44px;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.ring-label span {
+  font-size: 13px;
+  color: var(--dim);
+}
+
+.ghost {
+  align-self: center;
+  color: var(--dim);
+  font-size: 13px;
+  padding: 10px 16px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+}
+
+/* ---------- 工程4: 1問添削 ---------- */
+
+.pick {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  flex: 1;
+  justify-content: center;
+}
+
+.pick-item {
+  text-align: left;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 20px 18px;
+  font-size: 19px;
+  line-height: 1.4;
+}
+
+.pick-item:active {
+  border-color: var(--accent);
+}
+
+.write {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex: 1;
+  min-height: 0;
+}
+
+.picked-question {
+  margin: 0;
+  font-size: 15px;
+  color: var(--dim);
+  line-height: 1.4;
+}
+
+.write textarea {
+  flex: 1;
+  min-height: 140px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  color: var(--text);
+  padding: 14px;
+  /* 16px 未満だと iOS がフォーカス時に勝手にズームする */
+  font-size: 17px;
+  line-height: 1.5;
+  font-family: inherit;
+  resize: none;
+}
+
+.write textarea:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.primary {
+  background: var(--accent);
+  color: #1a0d06;
+  border-radius: 14px;
+  padding: 16px;
+  font-size: 17px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.primary:disabled {
+  background: var(--surface);
+  color: var(--dim);
+  cursor: default;
+}
+
+/* ---------- 工程5: 3回音読 ---------- */
+
+.shadow-text {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  font-size: 26px;
+  line-height: 1.5;
+  font-weight: 600;
+  margin: 0;
+  overflow-y: auto;
+}
+
+.reps {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  justify-content: center;
+  color: var(--dim);
+  font-size: 14px;
+  padding-bottom: 8px;
+}
+
+.reps .dot {
+  width: 12px;
+  height: 12px;
+}
+
+/* ---------- 完了 ---------- */
+
+.done {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  text-align: center;
+}
+
+.done h1 {
+  font-size: 26px;
+  margin: 0;
+}
+
+.checklist-line {
+  font-size: 13px;
+  color: var(--dim);
+  margin: 0;
+}
+
+.done-rewrite {
+  background: var(--surface);
+  border-radius: 14px;
+  padding: 16px;
+  font-size: 17px;
+  line-height: 1.5;
+  margin: 8px 0;
+  text-align: left;
+}
+
+.done .primary {
+  width: 100%;
+  max-width: 280px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
