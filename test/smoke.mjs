@@ -1,62 +1,14 @@
-// 6分15秒のセッションを、時計を偽装して一気に通す。
-// 検証するのは「仕様どおりの時間で工程が進み、途中で止めても記録が残る」こと。
-import { chromium } from 'playwright'
+// 6分5秒のセッションを、時計を偽装して一気に通す。
+// 検証するのは「仕様どおりの時間で工程が進み、書いた文が後日ちゃんと戻り、
+// 途中で止めても記録が残る」こと。
 import assert from 'node:assert/strict'
-import { createServer } from 'node:http'
-import { readFile } from 'node:fs/promises'
-import { extname, join, normalize } from 'node:path'
-import { existsSync, readdirSync } from 'node:fs'
-
-const SHOTS = process.env.SHOTS ?? 'test/shots'
-const ROOT = 'dist'
-const TYPES = {
-  '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css',
-  '.png': 'image/png', '.webmanifest': 'application/manifest+json',
-}
-
-// dist を GitHub Pages と同じ /Q-A/ 配下で配る。
-const server = createServer(async (req, res) => {
-  const path = decodeURIComponent(new URL(req.url, 'http://x').pathname).replace(/^\/Q-A/, '')
-  const safe = normalize(path).replace(/^(\.\.[/\\])+/, '')
-  const file = safe.endsWith('/') || safe === '' ? join(ROOT, safe, 'index.html') : join(ROOT, safe)
-  try {
-    const body = await readFile(file)
-    res.writeHead(200, { 'content-type': TYPES[extname(file)] ?? 'application/octet-stream' })
-    res.end(body)
-  } catch {
-    res.writeHead(404).end('not found')
-  }
-})
-
-await new Promise((resolve) => server.listen(0, resolve))
-const BASE = `http://localhost:${server.address().port}/Q-A/`
-
-// この環境の Chromium は PLAYWRIGHT_BROWSERS_PATH 配下にある。
-// Playwright のリビジョンと一致しないことがあるので、実体を探して渡す。
-function findChromium() {
-  if (process.env.CHROMIUM_PATH) return process.env.CHROMIUM_PATH
-  const root = process.env.PLAYWRIGHT_BROWSERS_PATH
-  if (!root || !existsSync(root)) return undefined
-  for (const dir of readdirSync(root)) {
-    if (!dir.startsWith('chromium-')) continue
-    const bin = join(root, dir, 'chrome-linux', 'chrome')
-    if (existsSync(bin)) return bin
-  }
-  return undefined
-}
-
-const browser = await chromium.launch({ executablePath: findChromium() })
-const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 })
-page.on('pageerror', (e) => { console.error('PAGE ERROR:', e.message); process.exitCode = 1 })
+import { launch } from './harness.mjs'
 
 const DAY1 = '2026-09-11T09:00:00'
 const DAY2 = '2026-09-12T09:00:00'
 
-await page.clock.install({ time: new Date(DAY1) })
-await page.goto(BASE)
-
-const shot = (name) => page.screenshot({ path: `${SHOTS}/${name}.png` })
-const text = (sel) => page.locator(sel).innerText()
+const { page, base, text, shot, close } = await launch({ time: DAY1 })
+await page.goto(base)
 
 // --- 待機画面 ---
 await page.getByRole('button', { name: /開始/ }).waitFor()
@@ -169,6 +121,5 @@ assert.equal(await page.locator('.log li').first().locator('.dot.on').count(), 3
 assert.match(await page.locator('.log li').first().innerText(), /3回回答まで/)
 assert.equal(await page.locator('.idle-meta').innerText().then(t => /復習 \d/.test(t)), false, '復習済みの項目が同じ日にまた期限を迎えている')
 
-await browser.close()
-server.close()
+await close()
 console.log('smoke: all assertions passed')

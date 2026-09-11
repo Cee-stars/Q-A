@@ -1,5 +1,6 @@
 import { get, set } from 'idb-keyval'
 import type { ReviewItem } from './review'
+import type { Question } from './questions'
 
 const RECORDS_KEY = 'qa:records'
 const SETTINGS_KEY = 'qa:settings'
@@ -22,9 +23,29 @@ export interface SessionRecord {
 
 export interface Settings {
   quiet: boolean
+  /** 端末内にしか無い。リポジトリにも配信物にも含まれない。 */
+  apiKey: string
+  level: string
+  goal: string
+  themes: string
+  /** 空ならプロンプトの既定値を使う。デプロイなしで調整するため編集できる。 */
+  generationPrompt: string
+  correctionPrompt: string
 }
 
-export const DEFAULT_SETTINGS: Settings = { quiet: false }
+export const DEFAULT_SETTINGS: Settings = {
+  quiet: false,
+  apiKey: '',
+  level: '中級（日常会話はできるが、詰まると止まる）',
+  goal: '仕事の会議と雑談',
+  themes: '仕事・日常・過去の経験',
+  generationPrompt: '',
+  correctionPrompt: '',
+}
+
+export function hasApiKey(settings: Settings): boolean {
+  return settings.apiKey.trim().length > 0
+}
 
 /** ローカル日付。UTC で切ると日本時間の深夜が前日扱いになる。 */
 export function today(d = new Date()): string {
@@ -55,6 +76,13 @@ export async function saveSettings(settings: Settings): Promise<void> {
   await set(SETTINGS_KEY, settings)
 }
 
+/** 明日の日付。先読み生成の保存先に使う。 */
+export function tomorrow(d = new Date()): string {
+  const next = new Date(d)
+  next.setDate(next.getDate() + 1)
+  return today(next)
+}
+
 /** 直近 n 回ぶんの出題。生成のたびに除外して重複を避ける。 */
 export function recentQuestionIds(records: SessionRecord[], sessions = 3): string[] {
   return records.slice(0, sessions).flatMap((r) => r.questionIds)
@@ -74,6 +102,20 @@ export function streak(records: SessionRecord[], from = new Date()): number {
   return n
 }
 
+// --- 先読み生成した問題 ---
+
+/**
+ * その日ぶんの生成済み10問。前夜のセッション終わりに書いておき、
+ * 翌朝は開いた瞬間に問題がある状態にする。
+ */
+export async function loadGenerated(date: string): Promise<Question[] | null> {
+  return (await get<Question[]>(`qa:questions:${date}`)) ?? null
+}
+
+export async function saveGenerated(date: string, questions: Question[]): Promise<void> {
+  await set(`qa:questions:${date}`, questions)
+}
+
 // --- 復習項目 ---
 
 const REVIEWS_KEY = 'qa:reviews'
@@ -84,4 +126,19 @@ export async function loadReviews(): Promise<ReviewItem[]> {
 
 export async function saveReviews(items: ReviewItem[]): Promise<void> {
   await set(REVIEWS_KEY, items)
+}
+
+// --- 直近の出題（生成時の重複回避用） ---
+
+const ASKED_KEY = 'qa:asked'
+const ASKED_LIMIT = 30
+
+/** 直近に出した質問文。生成プロンプトに除外指定として渡す。 */
+export async function loadAsked(): Promise<string[]> {
+  return (await get<string[]>(ASKED_KEY)) ?? []
+}
+
+/** 重複は落として新しいほうを残す。同じ日に開き直しても膨らまない。 */
+export async function saveAsked(texts: string[]): Promise<void> {
+  await set(ASKED_KEY, [...new Set(texts)].slice(-ASKED_LIMIT))
 }

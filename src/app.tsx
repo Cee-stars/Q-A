@@ -17,6 +17,8 @@ import {
   WARMUP_PER_QUESTION_MS,
 } from './session'
 import { pickDaily, pickFocus, Question } from './questions'
+import { correct, describeError, generateQuestions, type Correction } from './claude'
+import { DEFAULT_CORRECTION_PROMPT, DEFAULT_GENERATION_PROMPT } from './prompts'
 import {
   advance as advanceItem,
   createItem,
@@ -26,10 +28,15 @@ import {
 } from './review'
 import {
   DEFAULT_SETTINGS,
+  hasApiKey,
+  loadAsked,
+  loadGenerated,
   loadRecords,
   loadReviews,
   loadSettings,
   recentQuestionIds,
+  saveAsked,
+  saveGenerated,
   saveRecord,
   saveReviews,
   saveSettings,
@@ -37,6 +44,7 @@ import {
   Settings,
   streak,
   today,
+  tomorrow,
 } from './storage'
 import { cueDone, cueNext, cueRep, cueStage, unlockAudio } from './cues'
 import { keepAwake, releaseAwake } from './wakelock'
@@ -79,7 +87,13 @@ interface Run {
   focus: Question | null
   round: number
   segments: Segment[]
+  /** 学習者が書いた（話した）そのままの文。添削が失敗してもこれは残る。 */
+  answer: string
+  /** 工程5と復習に送る文。添削が返ればそちらに差し替わる。 */
   rewrite: string
+  correcting: boolean
+  correction: Correction | null
+  error: string | null
   cueKey: string
 }
 
@@ -90,7 +104,11 @@ const IDLE: Run = {
   focus: null,
   round: 0,
   segments: [],
+  answer: '',
   rewrite: '',
+  correcting: false,
+  correction: null,
+  error: null,
   cueKey: '',
 }
 
@@ -102,12 +120,15 @@ export function App() {
   const [records, setRecords] = useState<SessionRecord[]>([])
   const [reviews, setReviews] = useState<ReviewItem[]>([])
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS)
+  const [prefetched, setPrefetched] = useState<Question[] | null>(null)
+  const [showSettings, setShowSettings] = useState(false)
   const [now, setNow] = useState(Date.now())
 
   useEffect(() => {
     void loadRecords().then(setRecords)
     void loadReviews().then(setReviews)
     void loadSettings().then(setSettings)
+    void loadGenerated(today()).then(setPrefetched)
   }, [])
 
   const persist = useCallback(
@@ -155,6 +176,22 @@ export function App() {
     })
   }, [])
 
+  /**
+   * 翌日ぶんを先読みする。セッションが終わってから走らせるので、
+   * 練習の待ち時間にはならない。失敗しても黙って種問題バンクに落ちる。
+   */
+  const prefetchNext = useCallback(async () => {
+    if (!hasApiKey(settings)) return
+    const date = tomorrow()
+    if (await loadGenerated(date)) return
+    try {
+      const generated = await generateQuestions(settings, await loadAsked())
+      await saveGenerated(date, generated)
+    } catch {
+      // 明日は種問題バンクで練習すればよい。ここで利用者に知らせることは無い。
+    }
+  }, [settings])
+
   const advance = useCallback(() => {
     const r = run.current
     const cue = { quiet: settings.quiet }
@@ -184,6 +221,7 @@ export function App() {
           r.phase = 'done'
           releaseAwake()
           cueDone(cue)
+          void prefetchNext()
         } else {
           enqueueRewrite(r)
           r.phase = 'settle'
@@ -195,6 +233,7 @@ export function App() {
         r.phase = 'done'
         releaseAwake()
         cueDone(cue)
+        void prefetchNext()
         break
       default:
         return
@@ -203,7 +242,7 @@ export function App() {
     setNow(Date.now())
     persist(r)
     rerender()
-  }, [commitReviews, enqueueRewrite, persist, rerender, settings.quiet])
+  }, [commitReviews, enqueueRewrite, persist, prefetchNext, rerender, settings.quiet])
 
   // 工程の中の小さな切り替え（カードの答え表示、定着の3手）も音で伝える。
   // 画面を見ないので、これが無いと「いま何をする時間か」が分からない。
@@ -237,24 +276,36 @@ export function App() {
     return () => window.clearInterval(id)
   }, [advance, innerCue])
 
+  const begin = useCallback(
+    (ten: Question[]) => {
+      const date = today()
+      run.current = {
+        ...IDLE,
+        phase: 'review',
+        endsAt: Date.now() + REVIEW_MS,
+        ten,
+        focus: pickFocus(date, ten),
+        segments: buildSegments(selectForReview(reviews, date, REVIEW_SLOTS)),
+      }
+      cueStage({ quiet: settings.quiet })
+      setNow(Date.now())
+      persist(run.current)
+      rerender()
+      // 実際に出した問題を控える。出どころが種問題バンクでも生成でも、
+      // 次の生成はこれを除外指定として受け取る。
+      void loadAsked().then((asked) => saveAsked([...asked, ...ten.map((q) => q.text)]))
+    },
+    [persist, reviews, rerender, settings.quiet],
+  )
+
   const start = useCallback(() => {
     unlockAudio()
     keepAwake()
     const date = today()
-    const ten = pickDaily(date, recentQuestionIds(records))
-    run.current = {
-      ...IDLE,
-      phase: 'review',
-      endsAt: Date.now() + REVIEW_MS,
-      ten,
-      focus: pickFocus(date, ten),
-      segments: buildSegments(selectForReview(reviews, date, REVIEW_SLOTS)),
-    }
-    cueStage({ quiet: settings.quiet })
-    setNow(Date.now())
-    persist(run.current)
-    rerender()
-  }, [persist, records, reviews, rerender, settings.quiet])
+    // 前夜に先読みしたぶんがあればそれを使う。無ければ種問題バンク。
+    // ここで API を待つことは絶対にしない（開いた瞬間に喋り始められることが最優先）。
+    begin(prefetched ?? pickDaily(date, recentQuestionIds(records)))
+  }, [begin, prefetched, records])
 
   const stop = useCallback(() => {
     persist(run.current)
@@ -269,16 +320,52 @@ export function App() {
     void saveSettings(next)
   }, [settings])
 
-  const setRewrite = useCallback(
+  const setAnswer = useCallback(
     (text: string) => {
-      run.current.rewrite = text
+      const r = run.current
+      r.answer = text
+      // 添削が返らなくても自分の文は残る。時間切れでも工程5と復習に送れる。
+      if (!r.correction) r.rewrite = text
       rerender()
     },
     [rerender],
   )
 
+  const requestCorrection = useCallback(async () => {
+    const r = run.current
+    if (r.correcting || r.answer.trim().length === 0) return
+    r.correcting = true
+    r.error = null
+    rerender()
+    try {
+      const result = await correct(settings, r.focus?.text ?? '', r.answer.trim())
+      r.correction = result
+      r.rewrite = result.corrected
+    } catch (error) {
+      r.error = describeError(error)
+    } finally {
+      r.correcting = false
+      rerender()
+    }
+  }, [rerender, settings])
+
   const r = run.current
   const remaining = Math.max(0, r.endsAt - now)
+
+  if (showSettings) {
+    return (
+      <main class="screen">
+        <SettingsScreen
+          settings={settings}
+          onSave={(next) => {
+            setSettings(next)
+            void saveSettings(next)
+          }}
+          onClose={() => setShowSettings(false)}
+        />
+      </main>
+    )
+  }
 
   return (
     <main class={`screen screen-${r.phase}`}>
@@ -286,8 +373,10 @@ export function App() {
         <IdleScreen
           records={records}
           reviews={reviews}
-          quiet={settings.quiet}
+          settings={settings}
+          prefetched={prefetched !== null}
           onToggleQuiet={toggleQuiet}
+          onOpenSettings={() => setShowSettings(true)}
           onStart={start}
         />
       )}
@@ -308,9 +397,15 @@ export function App() {
       {r.phase === 'correct' && r.focus && (
         <CorrectScreen
           question={r.focus}
-          rewrite={r.rewrite}
+          answer={r.answer}
+          correcting={r.correcting}
+          correction={r.correction}
+          error={r.error}
+          canCorrect={hasApiKey(settings)}
+          lastCorrected={records.find((rec) => rec.rewrite)?.rewrite ?? null}
           remaining={remaining}
-          onRewrite={setRewrite}
+          onAnswer={setAnswer}
+          onCorrect={requestCorrection}
           onDone={advance}
           onStop={stop}
         />
@@ -504,16 +599,28 @@ function AnswerScreen({
 
 function CorrectScreen({
   question,
-  rewrite,
+  answer,
+  correcting,
+  correction,
+  error,
+  canCorrect,
+  lastCorrected,
   remaining,
-  onRewrite,
+  onAnswer,
+  onCorrect,
   onDone,
   onStop,
 }: {
   question: Question
-  rewrite: string
+  answer: string
+  correcting: boolean
+  correction: Correction | null
+  error: string | null
+  canCorrect: boolean
+  lastCorrected: string | null
   remaining: number
-  onRewrite: (text: string) => void
+  onAnswer: (text: string) => void
+  onCorrect: () => void
   onDone: () => void
   onStop: () => void
 }) {
@@ -521,24 +628,68 @@ function CorrectScreen({
     <div class="stage">
       <StageHead
         title="添削"
-        hint="3回目の答えを書き直す"
+        hint={correction ? '直った文を確認する' : '3回目の答えを書く'}
         remaining={remaining}
         total={CORRECT_MS}
         onStop={onStop}
       />
       <div class="write">
         <p class="picked-question">{question.text}</p>
-        <textarea
-          autofocus
-          rows={6}
-          placeholder="キーボードのマイクで話しても、打っても。2〜4文で。"
-          value={rewrite}
-          onInput={(e) => onRewrite((e.target as HTMLTextAreaElement).value)}
-        />
+
+        {correction ? (
+          <div class="corrected">
+            <p class="corrected-text">{correction.corrected}</p>
+            {correction.fixes.length > 0 && (
+              <ul class="fixes">
+                {correction.fixes.map((fix, i) => (
+                  <li key={i}>
+                    <s>{fix.was}</s> → <b>{fix.now}</b>
+                    <span> {fix.why}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        ) : correcting ? (
+          // 待ち時間を無音にしない。前回の添削文を出して読ませておく。
+          <div class="waiting">
+            <p class="waiting-label">添削中…</p>
+            {lastCorrected && <p class="waiting-text">{lastCorrected}</p>}
+          </div>
+        ) : (
+          <textarea
+            autofocus
+            rows={6}
+            placeholder="キーボードのマイクで話しても、打っても。2〜4文で。"
+            value={answer}
+            onInput={(e) => onAnswer((e.target as HTMLTextAreaElement).value)}
+          />
+        )}
+
+        {error && <p class="error">{error}　自分の文のまま進みます</p>}
         <p class="note">この文は明日・3日後・7日後・21日後に質問として戻ってくる。</p>
-        <button class="primary" onClick={onDone} disabled={rewrite.trim().length === 0}>
-          書けた → 定着へ
-        </button>
+
+        {canCorrect && !correction && !error ? (
+          <button
+            class="primary"
+            onClick={onCorrect}
+            disabled={correcting || answer.trim().length === 0}
+          >
+            {correcting ? '添削中…' : '添削する'}
+          </button>
+        ) : (
+          <>
+            <button class="primary" onClick={onDone} disabled={answer.trim().length === 0}>
+              定着へ
+            </button>
+            {/* 添削が落ちても練習は止めない。やり直しは任意。 */}
+            {error && !correcting && (
+              <button class="ghost" onClick={onCorrect}>
+                もう一度添削する
+              </button>
+            )}
+          </>
+        )}
       </div>
     </div>
   )
@@ -589,14 +740,18 @@ function SettleScreen({
 function IdleScreen({
   records,
   reviews,
-  quiet,
+  settings,
+  prefetched,
   onToggleQuiet,
+  onOpenSettings,
   onStart,
 }: {
   records: SessionRecord[]
   reviews: ReviewItem[]
-  quiet: boolean
+  settings: Settings
+  prefetched: boolean
   onToggleQuiet: () => void
+  onOpenSettings: () => void
   onStart: () => void
 }) {
   const days = streak(records)
@@ -605,7 +760,12 @@ function IdleScreen({
   return (
     <div class="idle">
       <header class="idle-head">
-        <h1>質問応答</h1>
+        <div class="idle-title">
+          <h1>質問応答</h1>
+          <button class="stop" onClick={onOpenSettings}>
+            設定
+          </button>
+        </div>
         <p class="sub">復習 → 3回回答 → 添削 → 定着 · {formatClock(TOTAL_MS)}</p>
       </header>
 
@@ -615,9 +775,11 @@ function IdleScreen({
       </button>
 
       <div class="idle-meta">
-        <button class={quiet ? 'chip on' : 'chip'} onClick={onToggleQuiet}>
-          小声モード{quiet ? ' ON' : ' OFF'}
+        <button class={settings.quiet ? 'chip on' : 'chip'} onClick={onToggleQuiet}>
+          小声モード{settings.quiet ? ' ON' : ' OFF'}
         </button>
+        {prefetched && <span class="chip flat">今日のぶん生成済み</span>}
+        {!hasApiKey(settings) && <span class="chip flat dim">種問題で練習中</span>}
         {due > 0 && <span class="chip flat">復習 {due}</span>}
         {days > 0 && <span class="chip flat">{days}日連続</span>}
       </div>
@@ -657,6 +819,95 @@ function DoneScreen({
       <p class="note">明日また質問として出る。</p>
       <button class="primary" onClick={onClose}>
         閉じる
+      </button>
+    </div>
+  )
+}
+
+/* ---------- 設定 ---------- */
+
+function SettingsScreen({
+  settings,
+  onSave,
+  onClose,
+}: {
+  settings: Settings
+  onSave: (next: Settings) => void
+  onClose: () => void
+}) {
+  const [draft, setDraft] = useState<Settings>(settings)
+  const field = (key: keyof Settings) => (e: Event) =>
+    setDraft({ ...draft, [key]: (e.target as HTMLInputElement | HTMLTextAreaElement).value })
+
+  return (
+    <div class="settings">
+      <header class="idle-head">
+        <div class="idle-title">
+          <h1>設定</h1>
+          <button class="stop" onClick={onClose}>
+            戻る
+          </button>
+        </div>
+      </header>
+
+      <label>
+        <span>Claude API キー</span>
+        <input
+          type="password"
+          autocomplete="off"
+          placeholder="sk-ant-..."
+          value={draft.apiKey}
+          onInput={field('apiKey')}
+        />
+        <em>この端末にだけ保存される。空のままでも種問題バンクで練習はできる。</em>
+      </label>
+
+      <label>
+        <span>レベル</span>
+        <input type="text" value={draft.level} onInput={field('level')} />
+      </label>
+
+      <label>
+        <span>話せるようになりたい場面</span>
+        <input type="text" value={draft.goal} onInput={field('goal')} />
+      </label>
+
+      <label>
+        <span>扱いたいテーマ</span>
+        <input type="text" value={draft.themes} onInput={field('themes')} />
+      </label>
+
+      <details>
+        <summary>プロンプトを編集する</summary>
+        <label>
+          <span>質問生成</span>
+          <textarea
+            rows={10}
+            placeholder={DEFAULT_GENERATION_PROMPT}
+            value={draft.generationPrompt}
+            onInput={field('generationPrompt')}
+          />
+        </label>
+        <label>
+          <span>添削</span>
+          <textarea
+            rows={10}
+            placeholder={DEFAULT_CORRECTION_PROMPT}
+            value={draft.correctionPrompt}
+            onInput={field('correctionPrompt')}
+          />
+        </label>
+        <em>空にすると既定のプロンプトに戻る。</em>
+      </details>
+
+      <button
+        class="primary"
+        onClick={() => {
+          onSave(draft)
+          onClose()
+        }}
+      >
+        保存
       </button>
     </div>
   )

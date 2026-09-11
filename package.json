@@ -8,14 +8,17 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "npm run test:contrast && npm run test:logic && npm run test:smoke",
+    "test": "npm run test:contrast && npm run test:logic && npm run build && npm run test:smoke && npm run test:api",
     "test:logic": "esbuild test/logic.test.ts --bundle --platform=node --format=esm --outfile=node_modules/.tmp/logic.mjs --log-level=warning && node node_modules/.tmp/logic.mjs",
-    "test:smoke": "npm run build && node test/smoke.mjs",
-    "test:contrast": "node test/contrast.mjs"
+    "test:smoke": "node test/smoke.mjs",
+    "test:contrast": "node test/contrast.mjs",
+    "test:api": "node test/api.mjs"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.125.0",
     "idb-keyval": "^6.2.1",
-    "preact": "^10.24.3"
+    "preact": "^10.24.3",
+    "zod": "^4.6.2"
   },
   "devDependencies": {
     "playwright": "^1.63.0",
