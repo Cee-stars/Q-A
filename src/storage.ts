@@ -1,4 +1,5 @@
 import { get, set } from 'idb-keyval'
+import type { ReviewItem } from './review'
 
 const RECORDS_KEY = 'qa:records'
 const SETTINGS_KEY = 'qa:settings'
@@ -13,6 +14,8 @@ export interface SessionRecord {
   pickedId: string | null
   /** Phase 1 は自分で書き直した文。Phase 2 で添削文に置き換わる。 */
   rewrite: string
+  /** その日に復習した枚数。 */
+  reviewed: number
   quiet: boolean
   updatedAt: number
 }
@@ -69,4 +72,16 @@ export function streak(records: SessionRecord[], from = new Date()): number {
     cursor.setDate(cursor.getDate() - 1)
   }
   return n
+}
+
+// --- 復習項目 ---
+
+const REVIEWS_KEY = 'qa:reviews'
+
+export async function loadReviews(): Promise<ReviewItem[]> {
+  return (await get<ReviewItem[]>(REVIEWS_KEY)) ?? []
+}
+
+export async function saveReviews(items: ReviewItem[]): Promise<void> {
+  await set(REVIEWS_KEY, items)
 }

@@ -256,51 +256,59 @@ button {
   border-radius: 999px;
 }
 
-/* ---------- 工程2: Q10音読 ---------- */
+/* ---------- 工程2: 復習 ---------- */
 
-.ten {
-  list-style: none;
-  counter-reset: q;
-  margin: 0;
-  padding: 0 0 40vh;
-  overflow-y: auto;
-  flex: 1;
+.card {
+  /* 伸ばさず、画面の中央に置く。 */
+  margin: auto 0;
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 18px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 18px;
+  padding: 24px 20px;
+  transition: border-color 0.2s ease;
 }
 
-.ten li {
-  counter-increment: q;
-  padding: 12px 14px;
-  border-radius: 12px;
-  font-size: 19px;
-  line-height: 1.45;
-  color: var(--dim);
-  transition: all 0.25s ease;
+.card.revealed {
+  border-color: var(--accent);
 }
 
-.ten li::before {
-  content: counter(q);
-  display: inline-block;
-  width: 22px;
+.card-kicker {
+  margin: 0;
   font-size: 12px;
   color: var(--dim);
+  font-variant-numeric: tabular-nums;
 }
 
-.ten li.past {
-  color: #b9ab97;
-}
-
-.ten li.now {
-  opacity: 1;
-  color: var(--text);
-  background: var(--surface);
-  font-size: 22px;
+.card-question {
+  margin: 0;
+  font-size: 23px;
+  line-height: 1.4;
   font-weight: 600;
 }
 
-/* ---------- 工程3: 3問回答 ---------- */
+.card-answer {
+  margin: 0;
+  font-size: 21px;
+  line-height: 1.5;
+  color: var(--accent-ink);
+  font-weight: 600;
+  border-top: 1px solid var(--line);
+  padding-top: 18px;
+}
+
+/* 思い出す時間は、答えの場所を空けたまま見せない。 */
+.card-veil {
+  margin: 0;
+  font-size: 15px;
+  color: var(--dim);
+  border-top: 1px dashed var(--line);
+  padding-top: 18px;
+}
+
+/* ---------- 工程3: 3回回答 ---------- */
 
 .stage-answer {
   justify-content: flex-start;
@@ -369,29 +377,7 @@ button {
   border-radius: 999px;
 }
 
-/* ---------- 工程4: 1問添削 ---------- */
-
-.pick {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  flex: 1;
-  justify-content: center;
-}
-
-.pick-item {
-  text-align: left;
-  background: var(--surface);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  padding: 20px 18px;
-  font-size: 19px;
-  line-height: 1.4;
-}
-
-.pick-item:active {
-  border-color: var(--accent);
-}
+/* ---------- 工程4: 添削 ---------- */
 
 .write {
   display: flex;
@@ -444,9 +430,9 @@ button {
   cursor: default;
 }
 
-/* ---------- 工程5: 3回音読 ---------- */
+/* ---------- 工程5: 定着 ---------- */
 
-.shadow-text {
+.settle-text {
   flex: 1;
   display: flex;
   align-items: center;
@@ -455,6 +441,21 @@ button {
   font-weight: 600;
   margin: 0;
   overflow-y: auto;
+}
+
+/* 暗唱の番。文は出さない。 */
+.settle-text.hidden-text {
+  justify-content: center;
+  color: var(--dim);
+  font-size: 18px;
+  font-weight: 500;
+}
+
+.note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--dim);
+  line-height: 1.5;
 }
 
 .reps {

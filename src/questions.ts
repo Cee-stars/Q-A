@@ -147,46 +147,17 @@ export function pickDaily(date: string, recentIds: string[] = []): Question[] {
 }
 
 /**
- * 工程3の3問。easy / mid / hard を1問ずつ選ぶ。
- * 全部を難問にすると3分が消耗だけで終わり、全部を易問にすると詰まる経験が無くなる。
- * 未回答のものを優先し、同条件なら日付で決まる順に選ぶ。
+ * その日の1問。同じ問題を時間を縮めて3回答えるので、日ごとの1問だけを選ぶ。
+ * 幅は1回のセッションではなく日をまたいで確保する。
+ *
+ * 難易度は mid を軸に回す。毎日 hard だと45秒×3が消耗になり、
+ * 毎日 easy だと詰まる経験が無くなって伸びが止まる。
  */
-export function pickThree(
-  date: string,
-  ten: Question[],
-  answeredIds: string[] = [],
-): Question[] {
-  const rand = mulberry32(hash(date + ':three'))
-  const answered = new Set(answeredIds)
-  const out: Question[] = []
+const FOCUS_ROTATION: Level[] = ['mid', 'easy', 'mid', 'hard']
 
-  for (const level of ['easy', 'mid', 'hard'] as const) {
-    const pool = ten.filter((q) => q.level === level && !out.includes(q))
-    if (pool.length === 0) continue
-    const fresh = pool.filter((q) => !answered.has(q.id))
-    out.push(pick(fresh.length > 0 ? fresh : pool, 1, rand)[0])
-  }
-
-  // その日の10問に欠けたレベルがあれば、残りから埋めて必ず3問にする。
-  const rest = ten.filter((q) => !out.includes(q))
-  out.push(...pick(rest, 3 - out.length, rand))
-
-  return out.slice(0, 3).sort((a, b) => levelRank(a) - levelRank(b))
-}
-
-function levelRank(q: Question): number {
-  return q.level === 'easy' ? 0 : q.level === 'mid' ? 1 : 2
-}
-
-/** 工程3の1問を差し替える（スワイプ1回分）。同じレベルの別の問題を返す。 */
-export function swapQuestion(
-  ten: Question[],
-  current: Question[],
-  target: Question,
-): Question {
-  const used = new Set(current.map((q) => q.id))
-  const sameLevel = ten.filter((q) => q.level === target.level && !used.has(q.id))
-  const anyOther = ten.filter((q) => !used.has(q.id))
-  const pool = sameLevel.length > 0 ? sameLevel : anyOther
-  return pool.length > 0 ? pool[0] : target
+export function pickFocus(date: string, ten: Question[]): Question {
+  const rand = mulberry32(hash(date + ':focus'))
+  const level = FOCUS_ROTATION[hash(date) % FOCUS_ROTATION.length]
+  const pool = ten.filter((q) => q.level === level)
+  return pick(pool.length > 0 ? pool : ten, 1, rand)[0]
 }
