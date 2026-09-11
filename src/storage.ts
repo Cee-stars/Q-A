@@ -1,4 +1,12 @@
-import { get, set } from 'idb-keyval'
+import { createStore, get as idbGet, set as idbSet } from 'idb-keyval'
+
+// cee-stars.github.io には他のアプリも同居している。既定の 'keyval-store' は
+// 汎用名なので、同じオリジンの別アプリと同じ箱を取り合うことになる。
+// 記録と復習項目はこのアプリ専用の箱に閉じ込める。
+const store = createStore('qa-drill', 'kv')
+
+const get = <T>(key: string) => idbGet<T>(key, store)
+const set = (key: string, value: unknown) => idbSet(key, value, store)
 import type { ReviewItem } from './review'
 import type { Question } from './questions'
 
