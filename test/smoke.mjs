@@ -23,6 +23,7 @@ await page.getByRole('button', { name: /開始/ }).click()
 await page.locator('.card').waitFor()
 assert.equal(await text('.stage-head h2'), '復習')
 assert.match(await text('.card-kicker'), /音読 1/, '履歴が無い日は音読で埋まるはず')
+assert.match(await text('.card-ja'), /[ぁ-んァ-ン一-龥]/, '音読カードに日本語が出ていない')
 const firstWarmup = await text('.card-question')
 await shot('2-review-warmup')
 
@@ -34,6 +35,8 @@ await page.clock.runFor(74_000)
 assert.equal(await text('.stage-head h2'), '3回回答 1/3', '工程3へ進んでいない')
 assert.equal(await page.locator('button:has-text("一時停止")').count(), 0, '一時停止ボタンが存在する')
 const asked = await text('.big-question')
+const askedJa = await text('.big-question-ja')
+assert.match(askedJa, /[ぁ-んァ-ン一-龥]/, '3回回答に日本語が出ていない')
 assert.match(await text('.ring-label'), /0:45/)
 await shot('3-answer')
 
@@ -50,7 +53,8 @@ assert.match(await text('.ring-label'), /0:25/, '3回目が25秒になってい�
 // --- 工程4: 添削。選ばせない（3回答えた1問がそのまま来る） ---
 await page.clock.runFor(25_000)
 assert.equal(await text('.stage-head h2'), '添削')
-assert.equal(await text('.picked-question'), asked, '添削の対象が3回答えた問題ではない')
+assert.ok((await text('.picked-question')).includes(asked), '添削の対象が3回答えた問題ではない')
+assert.ok((await text('.picked-question')).includes(askedJa), '添削画面に日本語が出ていない')
 assert.ok(await page.locator('.primary').isDisabled(), '空のまま先へ進めてしまう')
 
 const SENTENCE = 'I usually start the day by checking my messages. It takes about ten minutes.'
@@ -98,6 +102,7 @@ await page.getByRole('button', { name: /開始/ }).click()
 await page.locator('.card').waitFor()
 assert.equal(await text('.stage-head h2'), '復習 1/1', '昨日の項目が復習に出ていない')
 assert.equal(await text('.card-question'), asked, '復習カードの質問が昨日の問題ではない')
+assert.equal(await text('.card-ja'), askedJa, '復習カードに日本語が引き継がれていない')
 assert.match(await text('.hint'), /見ずに思い出して言う/)
 // 思い出す時間のあいだは答えを見せない
 assert.equal(await page.locator('.card-answer').count(), 0, '思い出す前に答えが見えている')

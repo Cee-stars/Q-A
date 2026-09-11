@@ -168,7 +168,7 @@ export function App() {
   /** 添削した文を、後日もう一度答えさせるために積む。 */
   const enqueueRewrite = useCallback((r: Run) => {
     if (!r.focus || r.rewrite.trim().length === 0) return
-    const item = createItem(r.focus.text, r.rewrite.trim(), today())
+    const item = createItem(r.focus.text, r.focus.ja, r.rewrite.trim(), today())
     setReviews((current) => {
       const next = [...current, item]
       void saveReviews(next)
@@ -529,6 +529,7 @@ function ReviewScreen({
         <div class="card">
           <p class="card-kicker">音読 {i + 1}</p>
           <p class="card-question">{questions[i]?.text}</p>
+          <p class="card-ja">{questions[i]?.ja}</p>
         </div>
       </div>
     )
@@ -548,6 +549,7 @@ function ReviewScreen({
       <div class={revealed ? 'card revealed' : 'card'}>
         <p class="card-kicker">{item.createdAt} の添削</p>
         <p class="card-question">{item.question}</p>
+        {item.questionJa && <p class="card-ja">{item.questionJa}</p>}
         {revealed ? (
           <p class="card-answer">{item.sentence}</p>
         ) : (
@@ -585,6 +587,7 @@ function AnswerScreen({
         showClock={false}
       />
       <p class="big-question">{question.text}</p>
+      <p class="big-question-ja">{question.ja}</p>
       <Ring
         progress={remaining / total}
         label={formatClock(remaining)}
@@ -634,7 +637,10 @@ function CorrectScreen({
         onStop={onStop}
       />
       <div class="write">
-        <p class="picked-question">{question.text}</p>
+        <p class="picked-question">
+          {question.text}
+          <span class="picked-question-ja">{question.ja}</span>
+        </p>
 
         {correction ? (
           <div class="corrected">

@@ -45,6 +45,7 @@ export async function generateQuestions(
       .array(
         z.object({
           text: z.string(),
+          ja: z.string(),
           level: z.enum(['easy', 'mid', 'hard']),
         }),
       )
@@ -75,6 +76,7 @@ export async function generateQuestions(
   return parsed.questions.map((q, i) => ({
     id: `g${i + 1}`,
     text: q.text,
+    ja: q.ja,
     level: q.level as Level,
   }))
 }

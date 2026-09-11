@@ -672,3 +672,24 @@ button {
   color: var(--dim);
   cursor: pointer;
 }
+
+/* ---------- 日本語（意味が取れないと答えようがない） ---------- */
+
+.card-ja {
+  margin: -8px 0 0;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--dim);
+}
+
+.big-question-ja {
+  margin: -14px 0 0;
+  font-size: 16px;
+  line-height: 1.5;
+  color: var(--dim);
+}
+
+.picked-question-ja {
+  display: block;
+  margin-top: 4px;
+}

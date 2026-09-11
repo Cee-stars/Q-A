@@ -41,7 +41,12 @@ for (const q of BANK) {
   assert.ok(words <= 15, `長すぎる: ${q.text} (${words}語)`)
   // 質問文か Describe/Tell me 型の指示文。どちらも句読点で終わる。
   assert.ok(/[?.]$/.test(q.text), `文末の句読点がない: ${q.text}`)
+  // 日本語が無いと、答える前に意味が分からず止まる。全問に必ず付ける。
+  assert.ok(q.ja && q.ja.trim().length > 0, `日本語が無い: ${q.text}`)
+  assert.ok(/[ぁ-んァ-ン一-龥]/.test(q.ja), `日本語になっていない: ${q.text} → ${q.ja}`)
+  assert.notEqual(q.ja, q.text, `日本語が英語のまま: ${q.text}`)
 }
+assert.equal(new Set(BANK.map((q) => q.ja)).size, BANK.length, '日本語が重複している')
 assert.equal(new Set(BANK.map((q) => q.id)).size, BANK.length, 'id が重複している')
 
 const ten = pickDaily('2026-09-11')
@@ -74,7 +79,8 @@ assert.ok(levels.size >= 2, '毎日同じ難易度ばかり出ている')
 
 /* --- 復習スケジュール --- */
 
-const item = createItem('What did you do?', 'I went to the gym.', '2026-09-11')
+const item = createItem('What did you do?', '何をした？', 'I went to the gym.', '2026-09-11')
+assert.equal(item.questionJa, '何をした？', '復習項目に日本語が入っていない')
 assert.equal(item.due, '2026-09-12', '最初の復習は翌日')
 assert.equal(item.reviews, 0)
 assert.ok(!isGraduated(item))

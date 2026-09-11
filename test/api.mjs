@@ -34,6 +34,7 @@ await page.route('**://api.anthropic.com/**', async (route) => {
     ? {
         questions: Array.from({ length: 10 }, (_, i) => ({
           text: `Generated question ${i + 1}?`,
+          ja: `生成された質問 ${i + 1}`,
           level: i < 6 ? 'easy' : i < 9 ? 'mid' : 'hard',
         })),
       }
@@ -75,16 +76,20 @@ assert.doesNotMatch(await text('.idle-meta'), /種問題で練習中/, 'キー�
 
 /* --- 工程4まで進める --- */
 
+/** 工程4まで進めて、その日の1問（英語・日本語）を返す。 */
 const toCorrectStage = async () => {
   await page.getByRole('button', { name: /開始/ }).click()
   await page.locator('.card').waitFor()
   await page.clock.runFor(80_500) // 工程2
+  const en = await text('.big-question')
+  const ja = await text('.big-question-ja')
   await page.clock.runFor(105_500) // 工程3
   assert.equal(await text('.stage-head h2'), '添削')
+  return { en, ja }
 }
-await toCorrectStage()
-
-const asked = await text('.picked-question')
+const { en: asked, ja: askedJa } = await toCorrectStage()
+assert.match(askedJa, /[ぁ-んァ-ン一-龥]/, '3回回答に日本語が出ていない')
+assert.ok((await text('.picked-question')).includes(askedJa), '添削画面に日本語が出ていない')
 await page.locator('textarea').fill(ANSWER)
 
 /* --- 添削が返る --- */
@@ -143,6 +148,7 @@ assert.equal(await text('.card-answer'), CORRECTED, '復習に出るのが添削
 
 await page.clock.runFor(68_000)
 assert.match(await text('.big-question'), /Generated question/, '生成された問題が使われていない')
+assert.match(await text('.big-question-ja'), /生成された質問/, '生成された問題に日本語が無い')
 await shot('a3-generated')
 
 /* --- API が落ちても練習は止まらない --- */

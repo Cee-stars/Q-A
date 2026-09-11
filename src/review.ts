@@ -11,6 +11,8 @@ export interface ReviewItem {
   id: string
   /** 元の質問。復習のときはこれだけを見せて思い出させる。 */
   question: string
+  /** 質問の日本語。古い記録には無いので optional。 */
+  questionJa?: string
   /** 添削された文。Phase 1 は自分で書き直した文。 */
   sentence: string
   createdAt: string
@@ -28,10 +30,16 @@ function addDays(date: string, days: number): string {
   return `${d.getFullYear()}-${m}-${day}`
 }
 
-export function createItem(question: string, sentence: string, date: string): ReviewItem {
+export function createItem(
+  question: string,
+  questionJa: string,
+  sentence: string,
+  date: string,
+): ReviewItem {
   return {
     id: `${date}-${Math.random().toString(36).slice(2, 8)}`,
     question,
+    questionJa,
     sentence,
     createdAt: date,
     reviews: 0,
