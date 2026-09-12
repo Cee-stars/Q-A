@@ -13,6 +13,7 @@ import {
   reachedFor,
 } from '../src/session'
 import { allPlaylists, findPlaylist, newPlaylist, newQuestion, seedPlaylist } from '../src/playlists'
+import { emptySnapshot, mergeSnapshots, type Snapshot } from '../src/sync'
 import {
   advance,
   createItem,
@@ -199,5 +200,81 @@ const many = [rec(day(0), 5), rec(day(-1), 5), rec(day(-2), 5), rec(day(-3), 5)]
 many[0].questionIds = ['a']; many[3].questionIds = ['z']
 const ids = recentQuestionIds(many)
 assert.ok(ids.includes('a') && !ids.includes('z'), '直近3回ぶんに絞れていない')
+
+/* --- 同期の合流 --- */
+
+const snap = (over: Partial<Snapshot> = {}): Snapshot => ({ ...emptySnapshot(), ...over })
+
+// 記録は「到達した工程が多いほう」を残す。後から同期した端末で巻き戻らないこと。
+{
+  const local = snap({ records: [{ ...rec('2026-09-11', 5), updatedAt: 100 }] })
+  const remote = snap({ records: [{ ...rec('2026-09-11', 3), updatedAt: 999 }] })
+  const merged = mergeSnapshots(local, remote)
+  assert.equal(merged.records.length, 1, '同じ日が二重に残った')
+  assert.equal(merged.records[0].reached, 5, '進んだ記録が巻き戻った')
+}
+
+// 到達が並んだら、後から書いたほうを採る
+{
+  const merged = mergeSnapshots(
+    snap({ records: [{ ...rec('2026-09-11', 3), updatedAt: 100, rewrite: 'old' }] }),
+    snap({ records: [{ ...rec('2026-09-11', 3), updatedAt: 200, rewrite: 'new' }] }),
+  )
+  assert.equal(merged.records[0].rewrite, 'new')
+}
+
+// 別々の日は両方残る
+{
+  const merged = mergeSnapshots(
+    snap({ records: [rec('2026-09-11', 5)] }),
+    snap({ records: [rec('2026-09-10', 5)] }),
+  )
+  assert.equal(merged.records.length, 2)
+  assert.equal(merged.records[0].date, '2026-09-11', '新しい日が先頭に来ていない')
+}
+
+// 復習項目は「復習回数が多いほう」を残す。巻き戻すと同じ日に二度出る。
+{
+  const ahead = { ...mk('x', '2026-09-20', 2) }
+  const behind = { ...mk('x', '2026-09-12', 1) }
+  const merged = mergeSnapshots(snap({ reviews: [behind] }), snap({ reviews: [ahead] }))
+  assert.equal(merged.reviews.length, 1, '同じ項目が二重に残った')
+  assert.equal(merged.reviews[0].reviews, 2, '復習の進みが巻き戻った')
+  assert.equal(merged.reviews[0].due, '2026-09-20')
+}
+
+// 片方にしか無い項目は消さない
+{
+  const merged = mergeSnapshots(snap({ reviews: [mk('a', '2026-09-12')] }), snap({ reviews: [mk('b', '2026-09-13')] }))
+  assert.equal(merged.reviews.length, 2, '片方にしか無い項目が消えた')
+}
+
+// プレイリストは編集が新しいほうを丸ごと残す
+{
+  const older = { ...newPlaylist('束'), id: 'p1', updatedAt: 100, questions: [] }
+  const newer = { ...newPlaylist('束'), id: 'p1', updatedAt: 200, questions: custom.questions.slice(0, 2) }
+  const merged = mergeSnapshots(snap({ playlists: [older] }), snap({ playlists: [newer] }))
+  assert.equal(merged.playlists.length, 1)
+  assert.equal(merged.playlists[0].questions.length, 2, '新しい編集が古いほうに負けた')
+}
+
+// 出題済みは両方を合わせ、重複を落として末尾30件
+{
+  const merged = mergeSnapshots(snap({ asked: ['a', 'b'] }), snap({ asked: ['b', 'c'] }))
+  assert.equal(new Set(merged.asked).size, merged.asked.length, '出題済みが重複している')
+  assert.ok(['a', 'b', 'c'].every((x) => merged.asked.includes(x)), '片方の出題済みが消えた')
+  const many = Array.from({ length: 40 }, (_, i) => `q${i}`)
+  assert.equal(mergeSnapshots(snap({ asked: many }), snap()).asked.length, 30, '上限を超えて溜まる')
+}
+
+// 合流は順番を入れ替えても同じ結果になる
+{
+  const a = snap({ records: [rec('2026-09-11', 5)], reviews: [mk('x', '2026-09-20', 2)] })
+  const b = snap({ records: [rec('2026-09-11', 3)], reviews: [mk('x', '2026-09-12', 1)] })
+  const ab = mergeSnapshots(a, b)
+  const ba = mergeSnapshots(b, a)
+  assert.deepEqual(ab.records, ba.records, '合流の向きで記録が変わる')
+  assert.deepEqual(ab.reviews, ba.reviews, '合流の向きで復習が変わる')
+}
 
 console.log('logic: all assertions passed')

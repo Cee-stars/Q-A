@@ -9,6 +9,8 @@ export interface Playlist {
   id: string
   name: string
   questions: Question[]
+  /** 合流のとき、新しいほうを残すための印。 */
+  updatedAt?: number
 }
 
 export const SEED_PLAYLIST_ID = 'seed'
@@ -31,7 +33,17 @@ export function findPlaylist(custom: Playlist[], id: string): Playlist {
 }
 
 export function newPlaylist(name: string): Playlist {
-  return { id: `pl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`, name, questions: [] }
+  return {
+    id: `pl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
+    name,
+    questions: [],
+    updatedAt: Date.now(),
+  }
+}
+
+/** 中身をいじったら必ず通す。これを忘れると、同期で古いほうが勝つ。 */
+export function touch(playlist: Playlist): Playlist {
+  return { ...playlist, updatedAt: Date.now() }
 }
 
 export interface QuestionDraft {

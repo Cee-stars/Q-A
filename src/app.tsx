@@ -35,6 +35,7 @@ import {
   selectForReview,
 } from './review'
 import {
+  canSync,
   DEFAULT_SETTINGS,
   hasApiKey,
   loadAsked,
@@ -48,6 +49,7 @@ import {
   saveGenerated,
   savePlaylists,
   saveRecord,
+  saveRecords,
   saveReviews,
   saveSettings,
   type SessionRecord,
@@ -56,6 +58,8 @@ import {
   today,
   tomorrow,
 } from './storage'
+import { emptySnapshot, syncOnce, SyncError, type Snapshot } from './sync'
+import { touch } from './playlists'
 import { cueDone, cueNext, cueRep, cueStage, unlockAudio } from './cues'
 import { speak, stopSpeaking, supported as speechSupported, unlockSpeech } from './speech'
 import { keepAwake, releaseAwake } from './wakelock'
@@ -143,6 +147,8 @@ export function App() {
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS)
   const [prefetched, setPrefetched] = useState<Question[] | null>(null)
   const [screen, setScreen] = useState<'drill' | 'settings' | 'library'>('drill')
+  const [syncState, setSyncState] = useState<'idle' | 'running' | 'ok' | 'error'>('idle')
+  const [syncError, setSyncError] = useState<string | null>(null)
   const [now, setNow] = useState(Date.now())
 
   useEffect(() => {
@@ -153,7 +159,51 @@ export function App() {
     void loadGenerated(today()).then(setPrefetched)
   }, [])
 
+
   const voice = { quiet: settings.quiet, enabled: settings.speak }
+
+  /**
+   * 1往復ぶんの同期。読んで合流させて書き戻し、合流結果を端末にも反映する。
+   * 失敗しても練習は止めない（記録は端末に残っている）。
+   */
+  const sync = useCallback(async () => {
+    if (!canSync(settings)) return
+    setSyncState('running')
+    setSyncError(null)
+    try {
+      const local: Snapshot = {
+        ...emptySnapshot(),
+        updatedAt: Date.now(),
+        records: await loadRecords(),
+        reviews: await loadReviews(),
+        playlists: await loadPlaylists(),
+        asked: await loadAsked(),
+      }
+      const { gistId, merged } = await syncOnce(settings.syncToken, settings.syncGistId, local)
+
+      await Promise.all([
+        saveReviews(merged.reviews),
+        savePlaylists(merged.playlists),
+        saveAsked(merged.asked),
+        saveRecords(merged.records),
+      ])
+      setRecords(merged.records)
+      setReviews(merged.reviews)
+      setPlaylists(merged.playlists)
+      if (gistId !== settings.syncGistId) {
+        setSettings((current) => {
+          const next = { ...current, syncGistId: gistId }
+          void saveSettings(next)
+          return next
+        })
+      }
+      setSyncState('ok')
+    } catch (error) {
+      setSyncError(error instanceof SyncError ? error.message : '同期に失敗しました')
+      setSyncState('error')
+    }
+  }, [settings])
+
 
   const persist = useCallback(
     (r: Run) => {
@@ -245,6 +295,7 @@ export function App() {
           releaseAwake()
           cueDone(cue)
           void prefetchNext()
+          if (settings.syncAuto) void sync()
         }
         break
       default:
@@ -254,7 +305,17 @@ export function App() {
     setNow(Date.now())
     persist(r)
     rerender()
-  }, [commitReviews, enqueueTakeaway, persist, prefetchNext, rerender, settings.quiet, voice])
+  }, [
+    commitReviews,
+    enqueueTakeaway,
+    persist,
+    prefetchNext,
+    rerender,
+    settings.quiet,
+    settings.syncAuto,
+    sync,
+    voice,
+  ])
 
   const innerCue = useCallback(
     (r: Run, t: number) => {
@@ -375,9 +436,14 @@ export function App() {
         <LibraryScreen
           playlists={playlists}
           settings={settings}
-          onChange={(next) => {
-            setPlaylists(next)
-            void savePlaylists(next)
+          onChange={(next, changedId) => {
+            // 触った束だけ時刻を進める。これが無いと合流で古いほうが勝つ。
+            const stamped = changedId
+              ? next.map((p) => (p.id === changedId ? touch(p) : p))
+              : next
+            setPlaylists(stamped)
+            void savePlaylists(stamped)
+            if (settings.syncAuto) void sync()
           }}
           onSelect={(id) => patchSettings({ playlistId: id })}
           onClose={() => setScreen('drill')}
@@ -395,6 +461,9 @@ export function App() {
           playlists={playlists}
           settings={settings}
           prefetched={prefetched !== null}
+          syncState={syncState}
+          syncError={syncError}
+          onSync={() => void sync()}
           onPatchSettings={patchSettings}
           onOpenSettings={() => setScreen('settings')}
           onOpenLibrary={() => setScreen('library')}
@@ -770,6 +839,9 @@ function IdleScreen({
   playlists,
   settings,
   prefetched,
+  syncState,
+  syncError,
+  onSync,
   onPatchSettings,
   onOpenSettings,
   onOpenLibrary,
@@ -780,6 +852,9 @@ function IdleScreen({
   playlists: Playlist[]
   settings: Settings
   prefetched: boolean
+  syncState: 'idle' | 'running' | 'ok' | 'error'
+  syncError: string | null
+  onSync: () => void
   onPatchSettings: (patch: Partial<Settings>) => void
   onOpenSettings: () => void
   onOpenLibrary: () => void
@@ -837,10 +912,16 @@ function IdleScreen({
             読み上げ{settings.speak ? ' ON' : ' OFF'}
           </button>
         )}
+        {canSync(settings) && (
+          <button class={syncState === 'error' ? 'chip warn' : 'chip'} onClick={onSync}>
+            {syncState === 'running' ? '同期中…' : syncState === 'error' ? '同期できず' : '同期'}
+          </button>
+        )}
         {prefetched && <span class="chip flat">今日のぶん生成済み</span>}
         {due > 0 && <span class="chip flat">復習 {due}</span>}
         {days > 0 && <span class="chip flat">{days}日連続</span>}
       </div>
+      {syncError && <p class="error">{syncError}</p>}
 
       <section class="log">
         <h2>{CHECKLIST_LABEL}</h2>
@@ -895,7 +976,7 @@ function LibraryScreen({
 }: {
   playlists: Playlist[]
   settings: Settings
-  onChange: (next: Playlist[]) => void
+  onChange: (next: Playlist[], changedId?: string) => void
   onSelect: (id: string) => void
   onClose: () => void
 }) {
@@ -924,7 +1005,10 @@ function LibraryScreen({
   const addQuestion = () => {
     if (!open || draft.text.trim().length === 0 || draft.model.trim().length === 0) return
     const question = newQuestion(open, draft)
-    onChange(playlists.map((p) => (p.id === open.id ? { ...p, questions: [...p.questions, question] } : p)))
+    onChange(
+      playlists.map((p) => (p.id === open.id ? { ...p, questions: [...p.questions, question] } : p)),
+      open.id,
+    )
     setDraft(EMPTY_DRAFT)
   }
 
@@ -933,6 +1017,7 @@ function LibraryScreen({
       playlists.map((p) =>
         p.id === playlistId ? { ...p, questions: p.questions.filter((q) => q.id !== questionId) } : p,
       ),
+      playlistId,
     )
   }
 
@@ -1032,12 +1117,18 @@ function LibraryScreen({
                     />
                   </label>
                   <label>
-                    <span>手本の答え</span>
+                    <span>手本の答え（英語）</span>
                     <textarea
-                      rows={2}
+                      rows={3}
+                      placeholder={'例: I live in Osaka. I have lived there for three years.'}
                       value={draft.model}
                       onInput={(e) => setDraft({ ...draft, model: (e.target as HTMLTextAreaElement).value })}
                     />
+                    <em>
+                      詰まったときに渡される答えの例。言い直しの3回で声に出すのもこれ。
+                      2文で、真似して言える短さに。
+                      {hasApiKey(settings) && '　英語か日本語を書いて「残りを埋めてもらう」でも作れます。'}
+                    </em>
                   </label>
                   <label>
                     <span>難しさ</span>
@@ -1062,7 +1153,7 @@ function LibraryScreen({
                         onClick={autofill}
                         disabled={filling || (draft.text.trim() === '' && draft.ja.trim() === '')}
                       >
-                        {filling ? '整えています…' : '残りを埋めてもらう'}
+                        {filling ? '整えています…' : '日本語か英語から、残りを作ってもらう'}
                       </button>
                     )}
                     <button
@@ -1135,6 +1226,42 @@ function SettingsScreen({
         <span>扱いたいテーマ</span>
         <input type="text" value={draft.themes} onInput={field('themes')} />
       </label>
+
+      <details>
+        <summary>端末どうしの同期</summary>
+        <label>
+          <span>GitHub トークン（gist 権限）</span>
+          <input
+            type="password"
+            autocomplete="off"
+            placeholder="ghp_..."
+            value={draft.syncToken}
+            onInput={field('syncToken')}
+          />
+        </label>
+        <label>
+          <span>Gist ID</span>
+          <input
+            type="text"
+            autocomplete="off"
+            placeholder="空なら新しく作ります"
+            value={draft.syncGistId}
+            onInput={field('syncGistId')}
+          />
+        </label>
+        <label class="row">
+          <input
+            type="checkbox"
+            checked={draft.syncAuto}
+            onChange={(e) => setDraft({ ...draft, syncAuto: (e.target as HTMLInputElement).checked })}
+          />
+          <span>起動時と練習後に自動で同期する</span>
+        </label>
+        <em>
+          瞬間英作文アプリと同じ Gist ID を入れて構いません。ファイル名を分けてあるので、
+          向こうの中身には触れません。トークンはこの端末にだけ保存されます。
+        </em>
+      </details>
 
       <details>
         <summary>プロンプトを編集する</summary>

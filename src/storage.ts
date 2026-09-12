@@ -36,6 +36,10 @@ export interface Settings {
   playlistId: string
   /** 英語を読み上げる。工程4の手本と、復習で出た文に効く。 */
   speak: boolean
+  /** 端末どうしの同期。瞬間英作文アプリと同じ Gist を指してよい。 */
+  syncToken: string
+  syncGistId: string
+  syncAuto: boolean
   /** 端末内にしか無い。リポジトリにも配信物にも含まれない。 */
   apiKey: string
   level: string
@@ -50,6 +54,9 @@ export const DEFAULT_SETTINGS: Settings = {
   quiet: false,
   playlistId: 'seed',
   speak: true,
+  syncToken: '',
+  syncGistId: '',
+  syncAuto: true,
   apiKey: '',
   level: '中級（日常会話はできるが、詰まると止まる）',
   goal: '仕事の会議と雑談',
@@ -60,6 +67,10 @@ export const DEFAULT_SETTINGS: Settings = {
 
 export function hasApiKey(settings: Settings): boolean {
   return settings.apiKey.trim().length > 0
+}
+
+export function canSync(settings: Settings): boolean {
+  return settings.syncToken.trim().length > 0
 }
 
 /** ローカル日付。UTC で切ると日本時間の深夜が前日扱いになる。 */
@@ -81,6 +92,11 @@ export async function saveRecord(record: SessionRecord): Promise<SessionRecord[]
   const next = [...rest, record].sort((a, b) => b.date.localeCompare(a.date))
   await set(RECORDS_KEY, next)
   return next
+}
+
+/** 合流結果をまとめて置き換える。同期のあとだけ使う。 */
+export async function saveRecords(records: SessionRecord[]): Promise<void> {
+  await set(RECORDS_KEY, [...records].sort((a, b) => b.date.localeCompare(a.date)))
 }
 
 export async function loadSettings(): Promise<Settings> {

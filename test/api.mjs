@@ -68,7 +68,7 @@ await page.goto(base)
 /* --- 設定にキーを入れる --- */
 
 await page.getByRole('button', { name: '設定' }).click()
-await page.locator('input[type=password]').fill('sk-ant-test-key')
+await page.locator('input[placeholder="sk-ant-..."]').fill('sk-ant-test-key')
 await shot('a1-settings')
 await page.getByRole('button', { name: '保存' }).click()
 await page.getByRole('button', { name: /開始/ }).waitFor()

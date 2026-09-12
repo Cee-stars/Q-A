@@ -856,3 +856,18 @@ button {
 .qform-actions .primary {
   flex: 1;
 }
+
+.chip.warn {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+
+.settings label.row {
+  flex-direction: row;
+  align-items: center;
+  gap: 10px;
+}
+
+.settings label.row input {
+  width: auto;
+}
