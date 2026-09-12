@@ -35,7 +35,8 @@ await page.route('**://api.anthropic.com/**', async (route) => {
         questions: Array.from({ length: 10 }, (_, i) => ({
           text: `Generated question ${i + 1}?`,
           ja: `生成された質問 ${i + 1}`,
-          level: i < 6 ? 'easy' : i < 9 ? 'mid' : 'hard',
+          model: `This is a model answer ${i + 1}. I say it twice.`,
+          level: i < 7 ? 'easy' : 'mid',
         })),
       }
     : {
@@ -66,37 +67,44 @@ await page.goto(base)
 
 /* --- 設定にキーを入れる --- */
 
-assert.match(await text('.idle-meta'), /種問題で練習中/, 'キー未設定の表示が出ていない')
 await page.getByRole('button', { name: '設定' }).click()
 await page.locator('input[type=password]').fill('sk-ant-test-key')
 await shot('a1-settings')
 await page.getByRole('button', { name: '保存' }).click()
 await page.getByRole('button', { name: /開始/ }).waitFor()
-assert.doesNotMatch(await text('.idle-meta'), /種問題で練習中/, 'キー設定後も未設定の表示が残っている')
 
 /* --- 工程4まで進める --- */
 
-/** 工程4まで進めて、その日の1問（英語・日本語）を返す。 */
-const toCorrectStage = async () => {
+/** 工程4（手本）まで進めて、その日の1問（英語・日本語）を返す。 */
+const toModelStage = async () => {
   await page.getByRole('button', { name: /開始/ }).click()
   await page.locator('.card').waitFor()
-  await page.clock.runFor(80_500) // 工程2
+  await page.clock.runFor(80_500) // 工程2 復習
   const en = await text('.big-question')
   const ja = await text('.big-question-ja')
-  await page.clock.runFor(105_500) // 工程3
-  assert.equal(await text('.stage-head h2'), '添削')
+  await page.clock.runFor(20_500) // 工程3 挑戦
+  assert.equal(await text('.stage-head h2'), '手本')
   return { en, ja }
 }
-const { en: asked, ja: askedJa } = await toCorrectStage()
-assert.match(askedJa, /[ぁ-んァ-ン一-龥]/, '3回回答に日本語が出ていない')
-assert.ok((await text('.picked-question')).includes(askedJa), '添削画面に日本語が出ていない')
+const { en: asked, ja: askedJa } = await toModelStage()
+assert.match(askedJa, /[ぁ-んァ-ン一-龥]/, '挑戦に日本語が出ていない')
+assert.ok((await text('.picked-question')).includes(askedJa), '手本画面に日本語が出ていない')
+// キーが無くても手本は出ている。API はその上書きでしかない。
+assert.ok((await text('.corrected-text')).length > 0, 'キーの有無に関わらず手本は出るはず')
+assert.equal(
+  await page.getByRole('button', { name: '自分の文を添削する' }).count(),
+  1,
+  'キーを入れたのに添削の口が出ていない',
+)
 await page.locator('textarea').fill(ANSWER)
 
 /* --- 添削が返る --- */
 
-await page.getByRole('button', { name: '添削する' }).click()
-await page.locator('.corrected-text').waitFor()
-assert.equal(await text('.corrected-text'), CORRECTED)
+await page.getByRole('button', { name: '自分の文を添削する' }).click()
+await page.waitForFunction(
+  (want) => document.querySelector('.corrected-text')?.textContent === want,
+  CORRECTED,
+)
 assert.equal(await page.locator('.fixes li').count(), 2, '直した箇所が出ていない')
 assert.match(await text('.fixes'), /go to the gym/)
 await shot('a2-corrected')
@@ -111,11 +119,11 @@ assert.ok(correctionRequest.max_tokens <= 1000, '出力上限が緩い')
 
 /* --- 定着と復習に流れるのは、添削された文のほう --- */
 
-await page.getByRole('button', { name: '定着へ' }).click()
-assert.equal(await text('.stage-head h2'), '定着')
-assert.equal(await text('.settle-text'), CORRECTED, '定着で読むのが添削前の文になっている')
+await page.getByRole('button', { name: '言い直しへ' }).click()
+assert.equal(await text('.stage-head h2'), '言い直し 1/3')
+assert.equal(await text('.respeak-model'), CORRECTED, '言い直しで読むのが添削前の文になっている')
 
-await page.clock.runFor(61_000)
+await page.clock.runFor(81_000)
 await page.locator('.done').waitFor()
 assert.equal(await text('.done-rewrite'), CORRECTED)
 
@@ -150,22 +158,26 @@ await page.clock.runFor(68_000)
 assert.match(await text('.big-question'), /Generated question/, '生成された問題が使われていない')
 assert.match(await text('.big-question-ja'), /生成された質問/, '生成された問題に日本語が無い')
 await shot('a3-generated')
+// 生成された問題にも手本が付いている
+await page.clock.runFor(20_500)
+assert.match(await text('.corrected-text'), /model answer/i, '生成された問題に手本が無い')
 
 /* --- API が落ちても練習は止まらない --- */
 
 mode = 'fail'
-await page.clock.runFor(105_500)
-assert.equal(await text('.stage-head h2'), '添削')
+assert.equal(await text('.stage-head h2'), '手本')
+const fallbackModel = await text('.corrected-text')
 await page.locator('textarea').fill(ANSWER)
-await page.getByRole('button', { name: '添削する' }).click()
+await page.getByRole('button', { name: '自分の文を添削する' }).click()
 await page.locator('.error').waitFor()
 assert.match(await text('.error'), /APIキーが正しくありません/)
+assert.equal(await text('.corrected-text'), fallbackModel, '添削が落ちたのに手本が消えている')
 await shot('a4-error')
 
-// 自分の文のまま工程5へ進める
-await page.getByRole('button', { name: '定着へ' }).click()
-assert.equal(await text('.stage-head h2'), '定着')
-assert.equal(await text('.settle-text'), ANSWER, '添削失敗時に自分の文が残っていない')
+// 添削が落ちても、自分の文のまま言い直しへ進める
+await page.getByRole('button', { name: '言い直しへ' }).click()
+assert.equal(await text('.stage-head h2'), '言い直し 1/3')
+assert.equal(await text('.respeak-model'), ANSWER, '添削失敗時に自分の文が残っていない')
 
 await close()
 console.log('api: all assertions passed')

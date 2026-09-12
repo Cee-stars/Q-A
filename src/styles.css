@@ -693,3 +693,166 @@ button {
   display: block;
   margin-top: 4px;
 }
+
+/* ---------- 手本と言い直し ---------- */
+
+.model-answer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.model-answer .corrected-text {
+  width: 100%;
+}
+
+.respeak-model {
+  margin: 0;
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: 14px;
+  padding: 14px 16px;
+  font-size: 19px;
+  line-height: 1.5;
+  font-weight: 600;
+}
+
+.respeak-model.hidden-text {
+  border-style: dashed;
+  border-color: var(--line);
+  color: var(--dim);
+  font-size: 15px;
+  font-weight: 500;
+  text-align: center;
+}
+
+.fade-rest {
+  color: var(--dim);
+}
+
+.ghost.small {
+  font-size: 12px;
+  padding: 6px 12px;
+}
+
+/* ---------- プレイリスト ---------- */
+
+.picker {
+  display: flex;
+  gap: 8px;
+}
+
+.picker select,
+.picker input {
+  flex: 1;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: var(--text);
+  padding: 12px 14px;
+  font-size: 16px;
+  font-family: inherit;
+}
+
+.picker-add {
+  width: 52px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  font-size: 20px;
+  color: var(--accent-ink);
+}
+
+.playlists {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.playlist-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.playlist-name {
+  flex: 1;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.playlist-name span {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--dim);
+}
+
+.playlist-body {
+  margin-top: 12px;
+  padding-left: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.qlist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.qlist li {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.qlist li > div {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 14px;
+  line-height: 1.45;
+}
+
+.qlist span {
+  color: var(--dim);
+}
+
+.qlist em {
+  font-style: normal;
+  color: var(--accent-ink);
+}
+
+.qform {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  background: var(--surface);
+  border-radius: 14px;
+  padding: 14px;
+}
+
+.qform-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.qform-actions .primary {
+  flex: 1;
+}

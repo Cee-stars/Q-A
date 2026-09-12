@@ -9,6 +9,7 @@ const get = <T>(key: string) => idbGet<T>(key, store)
 const set = (key: string, value: unknown) => idbSet(key, value, store)
 import type { ReviewItem } from './review'
 import type { Question } from './questions'
+import type { Playlist } from './playlists'
 
 const RECORDS_KEY = 'qa:records'
 const SETTINGS_KEY = 'qa:settings'
@@ -31,6 +32,10 @@ export interface SessionRecord {
 
 export interface Settings {
   quiet: boolean
+  /** 出題に使うプレイリスト。消えていたら種問題に落ちる。 */
+  playlistId: string
+  /** 英語を読み上げる。工程4の手本と、復習で出た文に効く。 */
+  speak: boolean
   /** 端末内にしか無い。リポジトリにも配信物にも含まれない。 */
   apiKey: string
   level: string
@@ -43,6 +48,8 @@ export interface Settings {
 
 export const DEFAULT_SETTINGS: Settings = {
   quiet: false,
+  playlistId: 'seed',
+  speak: true,
   apiKey: '',
   level: '中級（日常会話はできるが、詰まると止まる）',
   goal: '仕事の会議と雑談',
@@ -134,6 +141,19 @@ export async function loadReviews(): Promise<ReviewItem[]> {
 
 export async function saveReviews(items: ReviewItem[]): Promise<void> {
   await set(REVIEWS_KEY, items)
+}
+
+// --- プレイリスト ---
+
+const PLAYLISTS_KEY = 'qa:playlists'
+
+/** 自作の束だけを保存する。組み込みの種問題はコードの側にある。 */
+export async function loadPlaylists(): Promise<Playlist[]> {
+  return (await get<Playlist[]>(PLAYLISTS_KEY)) ?? []
+}
+
+export async function savePlaylists(playlists: Playlist[]): Promise<void> {
+  await set(PLAYLISTS_KEY, playlists)
 }
 
 // --- 直近の出題（生成時の重複回避用） ---

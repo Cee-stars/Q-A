@@ -46,6 +46,7 @@ export async function generateQuestions(
         z.object({
           text: z.string(),
           ja: z.string(),
+          model: z.string(),
           level: z.enum(['easy', 'mid', 'hard']),
         }),
       )
@@ -77,6 +78,7 @@ export async function generateQuestions(
     id: `g${i + 1}`,
     text: q.text,
     ja: q.ja,
+    model: q.model,
     level: q.level as Level,
   }))
 }
@@ -124,4 +126,53 @@ export function describeError(error: unknown): string {
   if (/429|rate.?limit/i.test(message)) return '回数制限です。少し待ってから'
   if (/fetch|network|Failed to fetch/i.test(message)) return 'ネットにつながっていません'
   return message.slice(0, 80)
+}
+
+/**
+ * 自分で足した質問の、足りないところを埋める。
+ * 英語だけ書いて放り込めるようにするためのもの。日本語も手本も必須なので、
+ * 手で3つとも書かせると、追加が面倒になって使われなくなる。
+ */
+export async function fillQuestion(
+  settings: Settings,
+  input: { text?: string; ja?: string },
+): Promise<{ text: string; ja: string; model: string; level: 'easy' | 'mid' | 'hard' }> {
+  const { anthropic, z, zodOutputFormat } = await client(settings.apiKey)
+
+  const schema = z.object({
+    text: z.string(),
+    ja: z.string(),
+    model: z.string(),
+    level: z.enum(['easy', 'mid', 'hard']),
+  })
+
+  const response = await anthropic.messages.parse({
+    model: MODEL,
+    max_tokens: 800,
+    output_config: { effort: 'low', format: zodOutputFormat(schema) },
+    messages: [
+      {
+        role: 'user',
+        content: `英語スピーキング練習の質問を1問、整えてください。
+
+学習者のレベル: ${settings.level}
+
+入力:
+- 英語: ${input.text?.trim() || '(未入力)'}
+- 日本語: ${input.ja?.trim() || '(未入力)'}
+
+出力:
+- text: 英語の質問。15語以内。自分の経験を語らせるもの
+- ja: 自然な話し言葉の日本語訳。直訳にしない
+- model: 手本の答え。2〜3文。平易な構文だけを使い、学習者がその場で真似して言える高さにする
+- level: easy / mid / hard のいずれか
+
+片方しか入力が無ければ、もう片方を補ってください。`,
+      },
+    ],
+  })
+
+  const parsed = response.parsed_output
+  if (!parsed) throw new Error('質問を整えられませんでした')
+  return parsed
 }

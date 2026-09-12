@@ -2,13 +2,17 @@ import assert from 'node:assert/strict'
 import { BANK, DAILY_COUNT, DAILY_MIX, pickDaily, pickFocus } from '../src/questions'
 import { recentQuestionIds, streak, today, SessionRecord } from '../src/storage'
 import {
-  ANSWER_ROUNDS_MS,
+  ATTEMPT_MS,
+  MODEL_MS,
+  PARTIAL_WORDS,
+  RESPEAK_ROUNDS_MS,
+  RESPEAK_SCAFFOLD,
   REVIEW_MS,
   REVIEW_SLOTS,
-  SETTLE_MS,
   TOTAL_MS,
   reachedFor,
 } from '../src/session'
+import { allPlaylists, findPlaylist, newPlaylist, newQuestion, seedPlaylist } from '../src/playlists'
 import {
   advance,
   createItem,
@@ -21,18 +25,24 @@ import {
 
 /* --- 仕様の数字 --- */
 
-assert.equal(TOTAL_MS, 365_000, '合計は6分5秒でなければならない')
+assert.equal(TOTAL_MS, 240_000, '合計は4分でなければならない')
 assert.ok(TOTAL_MS <= 480_000, '8分を超えている')
 assert.equal(REVIEW_MS, REVIEW_SLOTS * 20_000)
-assert.equal(SETTLE_MS, 60_000)
 assert.equal(reachedFor('idle'), 0)
 assert.equal(reachedFor('done'), 5)
 
-// 4/3/2: 同じ内容を、時間を縮めて3回
-assert.equal(ANSWER_ROUNDS_MS.length, 3)
-for (let i = 1; i < ANSWER_ROUNDS_MS.length; i++) {
-  assert.ok(ANSWER_ROUNDS_MS[i] < ANSWER_ROUNDS_MS[i - 1], '回を追うごとに短くなっていない')
+// 挑戦は短く。45秒の沈黙は効果を増やさず士気だけ削る。
+assert.ok(ATTEMPT_MS <= 20_000, '挑戦が長すぎる')
+assert.ok(MODEL_MS >= ATTEMPT_MS, '手本を受け取る時間が挑戦より短い')
+
+// 言い直しは回を追うごとに短くなり、足場は段階的に外れる
+assert.equal(RESPEAK_ROUNDS_MS.length, 3)
+for (let i = 1; i < RESPEAK_ROUNDS_MS.length; i++) {
+  assert.ok(RESPEAK_ROUNDS_MS[i] < RESPEAK_ROUNDS_MS[i - 1], '回を追うごとに短くなっていない')
 }
+assert.deepEqual(RESPEAK_SCAFFOLD, ['full', 'partial', 'none'], '足場の外し方が段階的でない')
+assert.equal(RESPEAK_SCAFFOLD.length, RESPEAK_ROUNDS_MS.length, '回数と足場の数が合っていない')
+assert.ok(PARTIAL_WORDS > 0 && PARTIAL_WORDS < 6, '部分表示の語数が極端')
 
 /* --- 問題バンク --- */
 
@@ -43,6 +53,18 @@ for (const q of BANK) {
   assert.ok(/[?.]$/.test(q.text), `文末の句読点がない: ${q.text}`)
   // 日本語が無いと、答える前に意味が分からず止まる。全問に必ず付ける。
   assert.ok(q.ja && q.ja.trim().length > 0, `日本語が無い: ${q.text}`)
+  // 手本が無いと、言えない日に渡すものが無くなる。全問に必ず付ける。
+  assert.ok(q.model && q.model.trim().length > 0, `手本が無い: ${q.text}`)
+  // 手本は2文以上。1文だと「2文目は自分のことで」が成立しない。
+  assert.ok(
+    (q.model.match(/[.!?]/g) ?? []).length >= 2,
+    `手本が1文しかない: ${q.text} → ${q.model}`,
+  )
+  // 真似して言える高さに置く。1文が長いと、読んだそばから落ちる。
+  for (const sentence of q.model.split(/(?<=[.!?])\s+/).filter((x) => x.trim())) {
+    const n = sentence.trim().split(/\s+/).length
+    assert.ok(n <= 14, `手本の1文が長すぎる (${n}語): ${sentence}`)
+  }
   assert.ok(/[ぁ-んァ-ン一-龥]/.test(q.ja), `日本語になっていない: ${q.text} → ${q.ja}`)
   assert.notEqual(q.ja, q.text, `日本語が英語のまま: ${q.text}`)
 }
@@ -55,15 +77,44 @@ assert.equal(new Set(ten.map((q) => q.id)).size, 10, '同じ日の10問に重複
 for (const level of ['easy', 'mid', 'hard'] as const) {
   assert.equal(ten.filter((q) => q.level === level).length, DAILY_MIX[level], `${level} の数`)
 }
+// 基本文型で詰まる段階では hard を出さない
+assert.equal(DAILY_MIX.hard, 0, '当面 hard は出さない')
 assert.deepEqual(pickDaily('2026-09-11').map((q) => q.id), ten.map((q) => q.id), '同じ日は同じ10問')
 
 const recent = pickDaily('2026-09-10').map((q) => q.id)
 assert.equal(
-  pickDaily('2026-09-11', recent).filter((q) => recent.includes(q.id)).length,
+  pickDaily('2026-09-11', BANK, recent).filter((q) => recent.includes(q.id)).length,
   0,
   '直近問題を除外できていない',
 )
-assert.equal(pickDaily('2026-09-11', BANK.map((q) => q.id)).length, 10, '除外過多で問題数が減った')
+assert.equal(
+  pickDaily('2026-09-11', BANK, BANK.map((q) => q.id)).length,
+  10,
+  '除外過多で問題数が減った',
+)
+
+// 自作の束でも出題できる。レベルが偏っていても止まらない。
+const custom = newPlaylist('自分の束')
+for (let i = 0; i < 12; i++) {
+  custom.questions.push(
+    newQuestion(custom, { text: `Q${i}?`, ja: `質問${i}`, model: 'I did it. It was fine.', level: 'easy' }),
+  )
+}
+const customTen = pickDaily('2026-09-11', custom.questions)
+assert.equal(customTen.length, 10, '自作の束から10問出ない')
+assert.equal(new Set(customTen.map((q) => q.id)).size, 10, '自作の束で重複した')
+assert.equal(new Set(custom.questions.map((q) => q.id)).size, 12, '追加した質問の id が重複している')
+
+// 束が少なくても、あるだけ出す
+const tiny = newPlaylist('少ない束')
+tiny.questions.push(newQuestion(tiny, { text: 'Only one?', ja: '1問だけ', model: 'Yes. I think so.', level: 'easy' }))
+assert.equal(pickDaily('2026-09-11', tiny.questions).length, 1, '少ない束で落ちる')
+
+// 組み込みは消せず、選択中が消えていても種問題に落ちる
+assert.equal(seedPlaylist().questions.length, BANK.length)
+assert.equal(allPlaylists([custom]).length, 2)
+assert.equal(findPlaylist([custom], 'missing').id, 'seed', '無い束を選んだら種問題に落ちるはず')
+assert.equal(findPlaylist([custom], custom.id).id, custom.id)
 
 // その日の1問は10問の中から選ばれ、日によって変わり、難易度が偏らない
 const focus = pickFocus('2026-09-11', ten)
