@@ -39,7 +39,8 @@ assert.equal(await page.locator('button:has-text("一時停止")').count(), 0, '
 const asked = await text('.big-question')
 const askedJa = await text('.big-question-ja')
 assert.match(askedJa, /[ぁ-んァ-ン一-龥]/, '挑戦に日本語が出ていない')
-assert.match(await text('.ring-label'), /0:20/, '挑戦が20秒になっていない')
+// 秒表示は刻みの位置で1秒ぶれる。確かめたいのは45秒ではなく20秒だということ。
+assert.match(await text('.ring-label'), /0:(19|20)/, '挑戦が20秒になっていない')
 await shot('3-attempt')
 
 // --- 工程4: 手本。何も書かなくても必ず渡される ---
@@ -56,7 +57,7 @@ await shot('4-model')
 await page.getByRole('button', { name: '言い直しへ' }).click()
 assert.equal(await text('.stage-head h2'), '言い直し 1/3')
 assert.equal(await text('.respeak-model'), model, '1回目に手本が出ていない')
-assert.match(await text('.ring-label'), /0:35/)
+assert.match(await text('.ring-label'), /0:(34|35)/)
 await shot('5-respeak-full')
 
 await page.clock.runFor(35_500)
@@ -64,13 +65,13 @@ assert.equal(await text('.stage-head h2'), '言い直し 2/3')
 const partial = await text('.respeak-model')
 assert.ok(partial.length < model.length, '2回目で足場が減っていない')
 assert.ok(model.startsWith(partial.replace(/\s*…\s*$/, '')), '2回目が手本の書き出しになっていない')
-assert.match(await text('.ring-label'), /0:25/)
+assert.match(await text('.ring-label'), /0:(24|25)/)
 await shot('6-respeak-partial')
 
 await page.clock.runFor(25_500)
 assert.equal(await text('.stage-head h2'), '言い直し 3/3')
 assert.ok(!(await text('.respeak-model')).includes(model.slice(0, 10)), '3回目で手本が消えていない')
-assert.match(await text('.ring-label'), /0:20/)
+assert.match(await text('.ring-label'), /0:(19|20)/)
 
 // --- 完了 ---
 await page.clock.runFor(20_500)

@@ -12,7 +12,15 @@ import {
   TOTAL_MS,
   reachedFor,
 } from '../src/session'
-import { allPlaylists, findPlaylist, newPlaylist, newQuestion, seedPlaylist } from '../src/playlists'
+import {
+  allPlaylists,
+  findPlaylist,
+  isUsable,
+  newPlaylist,
+  newQuestion,
+  resolvePool,
+  seedPlaylist,
+} from '../src/playlists'
 import { emptySnapshot, mergeSnapshots, type Snapshot } from '../src/sync'
 import {
   advance,
@@ -105,6 +113,28 @@ const customTen = pickDaily('2026-09-11', custom.questions)
 assert.equal(customTen.length, 10, '自作の束から10問出ない')
 assert.equal(new Set(customTen.map((q) => q.id)).size, 10, '自作の束で重複した')
 assert.equal(new Set(custom.questions.map((q) => q.id)).size, 12, '追加した質問の id が重複している')
+
+// 空の束を選んでいても、出題は止まらない（種問題に落ちる）
+{
+  const empty = newPlaylist('オンライン英会話')
+  assert.equal(isUsable(empty), false)
+  const pool = resolvePool([empty], empty.id)
+  assert.ok(pool.fellBack, '空の束なのに落ちていない')
+  assert.equal(pool.name, 'オンライン英会話', '落ちても選んだ束の名前は残す')
+  assert.ok(pool.questions.length > 0, '空の束で出題が空になった')
+
+  // ここが空だと、その日の1問が undefined になってセッションが壊れる
+  const tenFromEmpty = pickDaily('2026-09-20', pool.questions)
+  assert.ok(tenFromEmpty.length > 0, '空の束から10問が組めない')
+  assert.ok(pickFocus('2026-09-20', tenFromEmpty), 'その日の1問が決まらない')
+}
+
+// 中身のある束を選んでいれば、そのまま使う
+{
+  const pool = resolvePool([custom], custom.id)
+  assert.equal(pool.fellBack, false)
+  assert.equal(pool.questions.length, custom.questions.length)
+}
 
 // 束が少なくても、あるだけ出す
 const tiny = newPlaylist('少ない束')

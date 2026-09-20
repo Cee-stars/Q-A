@@ -67,7 +67,28 @@ export function newQuestion(playlist: Playlist, draft: QuestionDraft): Question 
   }
 }
 
-/** 出題に使える最低限を満たしているか。手本が無い質問は工程4で渡すものが無い。 */
+/** 出題に使える最低限を満たしているか。空の束からは1問も出せない。 */
 export function isUsable(playlist: Playlist): boolean {
   return playlist.questions.length > 0
+}
+
+export interface Pool {
+  /** 実際に出題に使う問題。空にはならない。 */
+  questions: Question[]
+  /** 選ばれている束の名前。 */
+  name: string
+  /** 選ばれた束が空で、種問題に落ちたか。 */
+  fellBack: boolean
+}
+
+/**
+ * 出題に使う問題を決める。
+ * **空の束が選ばれていても、必ず1問以上を返す。**
+ * ここで空を返すと、その日の1問が undefined になってセッションが開始直後に壊れる。
+ */
+export function resolvePool(custom: Playlist[], id: string): Pool {
+  const chosen = findPlaylist(custom, id)
+  if (isUsable(chosen)) return { questions: chosen.questions, name: chosen.name, fellBack: false }
+  const seed = seedPlaylist()
+  return { questions: seed.questions, name: chosen.name, fellBack: true }
 }

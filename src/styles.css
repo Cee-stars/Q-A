@@ -871,3 +871,11 @@ button {
 .settings label.row input {
   width: auto;
 }
+
+/* どの束に足すのかを、フォームの中で必ず名指しする */
+.qform-target {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--accent-ink);
+}

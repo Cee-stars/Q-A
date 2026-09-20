@@ -17,10 +17,12 @@ import {
   WARMUP_PER_QUESTION_MS,
 } from './session'
 import { pickDaily, pickFocus, type Level, type Question } from './questions'
+import { SEED_PLAYLIST_ID } from './playlists'
 import {
   allPlaylists,
-  findPlaylist,
+  isUsable,
   newPlaylist,
+  resolvePool,
   newQuestion,
   type Playlist,
   type QuestionDraft,
@@ -59,7 +61,7 @@ import {
   tomorrow,
 } from './storage'
 import { emptySnapshot, syncOnce, SyncError, type Snapshot } from './sync'
-import { touch } from './playlists'
+import { findPlaylist, touch } from './playlists'
 import { cueDone, cueNext, cueRep, cueStage, unlockAudio } from './cues'
 import { speak, stopSpeaking, supported as speechSupported, unlockSpeech } from './speech'
 import { keepAwake, releaseAwake } from './wakelock'
@@ -350,8 +352,13 @@ export function App() {
     unlockSpeech()
     keepAwake()
     const date = today()
-    const pool = findPlaylist(playlists, settings.playlistId).questions
-    const ten = prefetched ?? pickDaily(date, pool, recentQuestionIds(records))
+    const pool = resolvePool(playlists, settings.playlistId)
+    // 自分で束を選んでいるなら、先読み生成より選択のほうが優先。
+    // ここを逆にすると「選んだはずの束と違う問題が出る」になる。
+    const usePrefetched = prefetched !== null && settings.playlistId === SEED_PLAYLIST_ID
+    const ten = usePrefetched
+      ? (prefetched as Question[])
+      : pickDaily(date, pool.questions, recentQuestionIds(records))
     run.current = {
       ...IDLE,
       phase: 'review',
@@ -862,6 +869,8 @@ function IdleScreen({
 }) {
   const days = streak(records)
   const due = dueCount(reviews, today())
+  const selected = findPlaylist(playlists, settings.playlistId)
+  const emptySelected = !isUsable(selected)
   const todayRecord = records.find((r) => r.date === today())
   const options = allPlaylists(playlists)
   return (
@@ -912,6 +921,7 @@ function IdleScreen({
             読み上げ{settings.speak ? ' ON' : ' OFF'}
           </button>
         )}
+        {emptySelected && <span class="chip warn">この束は0問。種問題で練習します</span>}
         {canSync(settings) && (
           <button class={syncState === 'error' ? 'chip warn' : 'chip'} onClick={onSync}>
             {syncState === 'running' ? '同期中…' : syncState === 'error' ? '同期できず' : '同期'}
@@ -980,7 +990,11 @@ function LibraryScreen({
   onSelect: (id: string) => void
   onClose: () => void
 }) {
-  const [openId, setOpenId] = useState<string | null>(playlists[0]?.id ?? null)
+  // 開く束は、いま使っている束に合わせる。
+  // 先頭を勝手に開くと、使用中に押した束とは別の束のフォームに書き込んでしまう。
+  const [openId, setOpenId] = useState<string | null>(
+    playlists.some((p) => p.id === settings.playlistId) ? settings.playlistId : null,
+  )
   const [name, setName] = useState('')
   const [draft, setDraft] = useState<QuestionDraft>(EMPTY_DRAFT)
   const [filling, setFilling] = useState(false)
@@ -991,8 +1005,9 @@ function LibraryScreen({
   const addPlaylist = () => {
     if (name.trim().length === 0) return
     const created = newPlaylist(name.trim())
-    onChange([...playlists, created])
+    onChange([...playlists, created], created.id)
     setOpenId(created.id)
+    setDraft(EMPTY_DRAFT)
     setName('')
   }
 
@@ -1067,13 +1082,24 @@ function LibraryScreen({
         {playlists.map((p) => (
           <li key={p.id}>
             <div class="playlist-row">
-              <button class="playlist-name" onClick={() => setOpenId(openId === p.id ? null : p.id)}>
+              <button
+                class="playlist-name"
+                onClick={() => {
+                  setOpenId(openId === p.id ? null : p.id)
+                  setDraft(EMPTY_DRAFT)
+                }}
+              >
                 {p.name}
                 <span>{p.questions.length} 問</span>
               </button>
               <button
                 class={settings.playlistId === p.id ? 'chip on' : 'chip'}
-                onClick={() => onSelect(p.id)}
+                onClick={() => {
+                  onSelect(p.id)
+                  // 使う束と、質問を足す束を必ず一致させる。
+                  setOpenId(p.id)
+                  setDraft(EMPTY_DRAFT)
+                }}
               >
                 {settings.playlistId === p.id ? '使用中' : '使う'}
               </button>
@@ -1100,6 +1126,7 @@ function LibraryScreen({
                 </ul>
 
                 <div class="qform">
+                  <p class="qform-target">「{p.name}」に質問を足す</p>
                   <label>
                     <span>英語の質問</span>
                     <input
@@ -1161,7 +1188,7 @@ function LibraryScreen({
                       onClick={addQuestion}
                       disabled={draft.text.trim() === '' || draft.model.trim() === ''}
                     >
-                      追加
+                      「{p.name}」に追加
                     </button>
                   </div>
                 </div>
