@@ -35,6 +35,7 @@ import {
   advance as advanceItem,
   createItem,
   dueCount,
+  dueElsewhere,
   type ReviewItem,
   selectForReview,
 } from './review'
@@ -242,13 +243,19 @@ export function App() {
   const enqueueTakeaway = useCallback((r: Run) => {
     const sentence = takeaway(r)
     if (!r.focus || sentence.trim().length === 0) return
-    const item = createItem(r.focus.text, r.focus.ja, sentence.trim(), today())
+    const item = createItem(
+      r.focus.text,
+      r.focus.ja,
+      sentence.trim(),
+      today(),
+      settings.playlistId,
+    )
     setReviews((current) => {
       const next = [...current, item]
       void saveReviews(next)
       return next
     })
-  }, [])
+  }, [settings.playlistId])
 
   const prefetchNext = useCallback(async () => {
     if (!hasApiKey(settings)) return
@@ -367,7 +374,8 @@ export function App() {
       endsAt: Date.now() + REVIEW_MS,
       ten,
       focus: pickFocus(date, ten),
-      segments: buildSegments(selectForReview(reviews, date, REVIEW_SLOTS)),
+      // いま使っている束の持ち帰りだけを復習に出す。
+      segments: buildSegments(selectForReview(reviews, date, REVIEW_SLOTS, settings.playlistId)),
     }
     cueStage({ quiet: settings.quiet })
     setNow(Date.now())
@@ -866,7 +874,8 @@ function IdleScreen({
   onStart: () => void
 }) {
   const days = streak(records)
-  const due = dueCount(reviews, today())
+  const due = dueCount(reviews, today(), settings.playlistId)
+  const elsewhere = dueElsewhere(reviews, today(), settings.playlistId)
   const selected = findPlaylist(playlists, settings.playlistId)
   const emptySelected = !isUsable(selected)
   const todayRecord = records.find((r) => r.date === today())
@@ -927,6 +936,7 @@ function IdleScreen({
         )}
         {prefetched && <span class="chip flat">今日のぶん生成済み</span>}
         {due > 0 && <span class="chip flat">復習 {due}</span>}
+        {elsewhere > 0 && <span class="chip dim">他の束に {elsewhere}</span>}
         {days > 0 && <span class="chip flat">{days}日連続</span>}
       </div>
       {syncError && <p class="error">{syncError}</p>}

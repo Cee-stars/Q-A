@@ -29,6 +29,8 @@ import {
   advance,
   createItem,
   dueCount,
+  dueElsewhere,
+  homeOf,
   INTERVALS,
   isGraduated,
   ReviewItem,
@@ -183,8 +185,8 @@ assert.deepEqual(dues.slice(0, 4), ['2026-09-12', '2026-09-15', '2026-09-22', '2
 // 卒業後に間隔が壊れない
 assert.equal(advance(cursor, '2026-10-13').due, cursor.due)
 
-const mk = (id: string, due: string, reviews = 0): ReviewItem => ({
-  id, question: `Q${id}`, sentence: `S${id}`, createdAt: due, reviews, due,
+const mk = (id: string, due: string, reviews = 0, playlistId?: string): ReviewItem => ({
+  id, question: `Q${id}`, sentence: `S${id}`, createdAt: due, reviews, due, playlistId,
 })
 
 // 期限が来たものを、遅れている順に取る
@@ -207,6 +209,55 @@ assert.equal(new Set(filled.map((i) => i.id)).size, filled.length, '同じ項目
 
 // 履歴が無い日でも落ちない
 assert.deepEqual(selectForReview([], '2026-09-11', 4), [])
+
+/* --- 復習は、いま使っている束のものだけ --- */
+
+{
+  const mixed = [
+    mk('own1', '2026-09-10', 0, 'pl-online'),
+    mk('own2', '2026-09-11', 0, 'pl-online'),
+    mk('other', '2026-09-09', 0, 'pl-chat'),
+    mk('legacy', '2026-09-08'), // 束の印が無い古い記録
+  ]
+
+  // 印の無い項目は種問題のものとして扱う
+  assert.equal(homeOf(mixed[3]), 'seed', '印の無い項目の扱いが違う')
+  assert.equal(homeOf(mixed[0]), 'pl-online')
+
+  const picked = selectForReview(mixed, '2026-09-11', 4, 'pl-online')
+  assert.deepEqual(picked.map((i) => i.id), ['own1', 'own2'], '別の束の質問が混ざった')
+  assert.ok(!picked.some((i) => i.id === 'other'), '他の束の項目が出た')
+  assert.ok(!picked.some((i) => i.id === 'legacy'), '印の無い項目が別の束に出た')
+
+  // 種問題を選んでいるときは、印の無い古い記録が出る
+  assert.deepEqual(
+    selectForReview(mixed, '2026-09-11', 4, 'seed').map((i) => i.id),
+    ['legacy'],
+    '古い記録が種問題側で出てこない',
+  )
+
+  // 枠が余っても、他の束の卒業済みで埋めない
+  const withGrad = [...mixed, mk('gradOther', '2026-08-01', INTERVALS.length, 'pl-chat')]
+  assert.ok(
+    !selectForReview(withGrad, '2026-09-11', 4, 'pl-online').some((i) => i.id === 'gradOther'),
+    '余った枠を他の束で埋めた',
+  )
+
+  // 数え方も束ごと。他の束のぶんは黙って消さず、別に数える。
+  assert.equal(dueCount(mixed, '2026-09-11', 'pl-online'), 2)
+  assert.equal(dueCount(mixed, '2026-09-11'), 4, '全体の数が合わない')
+  assert.equal(dueElsewhere(mixed, '2026-09-11', 'pl-online'), 2, '他の束の残りを数えていない')
+  assert.equal(dueElsewhere(mixed, '2026-09-11', 'seed'), 3)
+}
+
+// 新しい持ち帰りには、出どころの束が刻まれる
+{
+  const tagged = createItem('Q?', '質問', 'A. B.', '2026-09-20', 'pl-online')
+  assert.equal(tagged.playlistId, 'pl-online')
+  assert.equal(homeOf(tagged), 'pl-online')
+  // 省いたら種問題
+  assert.equal(homeOf(createItem('Q?', '質問', 'A. B.', '2026-09-20')), 'seed')
+}
 
 // 1日1項目増える定常状態で、枠が需要に足りているか
 assert.equal(INTERVALS.length, REVIEW_SLOTS, '1日あたりの復習需要と枠数が釣り合っていない')

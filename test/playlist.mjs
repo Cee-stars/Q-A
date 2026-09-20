@@ -120,6 +120,77 @@ await page.locator('.picker-add').click()
 await page.locator('.playlists').waitFor()
 assert.deepEqual(await counts(), { 雑談フレーズ: 1, オンライン英会話: 1 }, '移動が保存されていない')
 
+/* --- 別の束の復習が混ざらないこと（利用者が報告した症状） --- */
+
+// 雑談フレーズで1回通して、持ち帰りを作る
+await page.getByRole('button', { name: '戻る' }).click()
+await page.getByRole('button', { name: /開始/ }).waitFor()
+
+const runOnce = async () => {
+  await page.getByRole('button', { name: /開始/ }).click()
+  await page.locator('.card').waitFor()
+  await page.clock.runFor(80_500)
+  const asked = await text('.big-question')
+  await page.clock.runFor(20_500)
+  await page.getByRole('button', { name: '言い直しへ' }).click()
+  await page.clock.runFor(81_000)
+  await page.locator('.done').waitFor()
+  await page.locator('.done .primary').click()
+  return asked
+}
+
+/** 束名は「名前（問題数）」で並ぶので、名前で始まる選択肢の value を探して選ぶ。 */
+const selectPlaylist = async (name) => {
+  const value = await page.locator('.picker select option').evaluateAll(
+    (options, wanted) =>
+      options.find((o) => (o.textContent ?? '').startsWith(wanted))?.value ?? '',
+    name,
+  )
+  assert.ok(value, `プレイリスト「${name}」が選べない`)
+  await page.locator('.picker select').selectOption(value)
+}
+
+await selectPlaylist('雑談フレーズ')
+const chatQuestion = await runOnce()
+
+// 翌日、オンライン英会話に切り替えて開始する
+await page.clock.setSystemTime(new Date('2026-09-21T09:00:00'))
+await page.reload()
+await page.getByRole('button', { name: /開始/ }).waitFor()
+await selectPlaylist('オンライン英会話')
+
+// 雑談フレーズの持ち帰りは「他の束」に数えられ、この束の復習には出ない
+assert.match(await text('.idle-meta'), /他の束に 1/, '他の束の復習を数えていない')
+assert.doesNotMatch(await text('.idle-meta'), /復習 \d/, 'この束に無い復習を数えている')
+await shot('p4-scoped-counts')
+
+await page.getByRole('button', { name: /開始/ }).click()
+await page.locator('.card').waitFor()
+assert.match(
+  await text('.card-kicker'),
+  /音読/,
+  '別の束の持ち帰りが復習に出ている',
+)
+assert.ok(
+  !(await text('.card')).includes(chatQuestion),
+  '雑談フレーズの質問がオンライン英会話の復習に混ざった',
+)
+await shot('p5-no-cross-playlist')
+
+// 雑談フレーズに戻せば、ちゃんと復習に出る
+await page.getByRole('button', { name: '終了' }).click()
+await selectPlaylist('雑談フレーズ')
+assert.match(await text('.idle-meta'), /復習 1/, '自分の束の復習が出てこない')
+await page.getByRole('button', { name: /開始/ }).click()
+await page.locator('.card').waitFor()
+assert.match(await text('.card-kicker'), /の持ち帰り/, '自分の束の持ち帰りが復習に出ない')
+assert.equal(await text('.card-question'), chatQuestion, '復習に出た質問が違う')
+await page.getByRole('button', { name: '終了' }).click()
+
+// 以降はライブラリ画面で続ける
+await page.locator('.picker-add').click()
+await page.locator('.playlists').waitFor()
+
 /* --- 0問の束を選んだままでも、練習は壊れない --- */
 
 await makePlaylist('からっぽ')
