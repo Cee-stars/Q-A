@@ -879,3 +879,23 @@ button {
   font-weight: 600;
   color: var(--accent-ink);
 }
+
+/* ---------- 質問の移動 ---------- */
+
+.qactions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-end;
+}
+
+.qmove {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--accent-ink);
+  padding: 6px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  max-width: 130px;
+}

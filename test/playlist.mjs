@@ -19,6 +19,10 @@ const addQuestion = async (en, ja, model) => {
   await form.getByRole('button', { name: /に追加$/ }).click()
 }
 
+/** 束の行。見出しで特定する（行全体だと移動の選択肢に相手の名前が入って当たる）。 */
+const row = (name) =>
+  page.locator('.playlists > li').filter({ has: page.locator('.playlist-name', { hasText: name }) })
+
 /** 束ごとの問題数を { 名前: 問題数 } で読む。 */
 const counts = async () =>
   Object.fromEntries(
@@ -52,7 +56,7 @@ await page.locator('.picker-add').click()
 await page.locator('.playlists').waitFor()
 
 // 「オンライン英会話」を使用中にする
-const online = page.locator('.playlists > li').filter({ hasText: 'オンライン英会話' })
+const online = row('オンライン英会話')
 await online.getByRole('button', { name: /^使う$|^使用中$/ }).click()
 assert.match(await online.innerText(), /使用中/, '使用中にならない')
 
@@ -74,15 +78,52 @@ assert.deepEqual(
 )
 
 // 別の束を開いたら、書きかけは持ち越さない
-const chat = page.locator('.playlists > li').filter({ hasText: '雑談フレーズ' })
+const chat = row('雑談フレーズ')
 await chat.locator('.playlist-name').click()
 assert.match(await text('.qform-target'), /雑談フレーズ/)
 assert.equal(await page.locator('.qform input').nth(0).inputValue(), '', '書きかけが別の束へ持ち越された')
 
+/* --- 質問の移動。消して書き直さずに済むこと --- */
+
+// 「雑談フレーズ」の質問を「オンライン英会話」へ移す
+const chatItem = chat.locator('.qlist li').first()
+const movingText = await chatItem.locator('b').innerText()
+await chatItem.locator('.qmove').selectOption({ label: 'オンライン英会話 へ' })
+
+assert.deepEqual(
+  await counts(),
+  { 雑談フレーズ: 0, オンライン英会話: 2 },
+  '移動で数が合っていない',
+)
+await shot('p3-moved')
+
+// 中身がそのまま移っている（消して書き直す必要が無いこと）
+await online.locator('.playlist-name').click()
+const texts = await online.locator('.qlist b').allInnerTexts()
+assert.ok(texts.includes(movingText), '移動した質問の英文が失われた')
+const movedRow = online.locator('.qlist li').filter({ has: page.locator('b', { hasText: movingText }) })
+assert.match(await movedRow.innerText(), /みずみずしくて美味しそう/, '日本語が移っていない')
+assert.match(await movedRow.innerText(), /It sounds juicy/, '手本が移っていない')
+
+// 戻せる
+await movedRow.locator('.qmove').selectOption({ label: '雑談フレーズ へ' })
+assert.deepEqual(
+  await counts(),
+  { 雑談フレーズ: 1, オンライン英会話: 1 },
+  '戻せていない',
+)
+
+// 開き直しても移動が残っている
+await page.getByRole('button', { name: '戻る' }).click()
+await page.getByRole('button', { name: /開始/ }).waitFor()
+await page.locator('.picker-add').click()
+await page.locator('.playlists').waitFor()
+assert.deepEqual(await counts(), { 雑談フレーズ: 1, オンライン英会話: 1 }, '移動が保存されていない')
+
 /* --- 0問の束を選んだままでも、練習は壊れない --- */
 
 await makePlaylist('からっぽ')
-const empty = page.locator('.playlists > li').filter({ hasText: 'からっぽ' })
+const empty = row('からっぽ')
 await empty.getByRole('button', { name: /^使う$/ }).click()
 await page.getByRole('button', { name: '戻る' }).click()
 

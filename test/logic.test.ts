@@ -13,11 +13,14 @@ import {
   reachedFor,
 } from '../src/session'
 import {
+  addQuestionTo,
   allPlaylists,
   findPlaylist,
   isUsable,
+  moveQuestion,
   newPlaylist,
   newQuestion,
+  removeQuestionFrom,
   resolvePool,
   seedPlaylist,
 } from '../src/playlists'
@@ -230,6 +233,74 @@ const many = [rec(day(0), 5), rec(day(-1), 5), rec(day(-2), 5), rec(day(-3), 5)]
 many[0].questionIds = ['a']; many[3].questionIds = ['z']
 const ids = recentQuestionIds(many)
 assert.ok(ids.includes('a') && !ids.includes('z'), '直近3回ぶんに絞れていない')
+
+/* --- 質問の移動 --- */
+
+const draftOf = (n: number) => ({
+  text: `Question ${n}?`,
+  ja: `質問${n}`,
+  model: `I did it. It was number ${n}.`,
+  level: 'easy' as const,
+})
+
+{
+  // 2つの束を用意し、片方に3問入れる
+  let lists = [newPlaylist('雑談'), newPlaylist('オンライン英会話')]
+  const [chat, online] = lists
+  for (const n of [1, 2, 3]) lists = addQuestionTo(lists, chat.id, draftOf(n))
+  assert.equal(lists[0].questions.length, 3)
+
+  // 足した束だけでなく、時刻も進んでいる（同期で古いほうに負けないため）
+  assert.ok((lists[0].updatedAt ?? 0) >= (chat.updatedAt ?? 0), '追加で時刻が進んでいない')
+
+  // 真ん中の1問を移す
+  const moving = lists[0].questions[1]
+  lists = moveQuestion(lists, chat.id, online.id, moving.id)
+
+  assert.equal(lists[0].questions.length, 2, '移動元から消えていない')
+  assert.equal(lists[1].questions.length, 1, '移動先に入っていない')
+  assert.equal(lists[1].questions[0].text, moving.text, '移動で中身が変わった')
+  assert.equal(lists[1].questions[0].ja, moving.ja)
+  assert.equal(lists[1].questions[0].model, moving.model)
+  assert.ok(!lists[0].questions.some((q) => q.text === moving.text), '移動元に残っている')
+
+  // **両方の束の時刻が進んでいること。** 片方だけだと合流で移動が取り消される。
+  assert.ok((lists[0].updatedAt ?? 0) > 0 && (lists[1].updatedAt ?? 0) > 0, '移動で時刻が進んでいない')
+}
+
+{
+  // 移動先に同じ id の質問があっても、既存のものを潰さない
+  let lists = [newPlaylist('A'), newPlaylist('B')]
+  const [a, b] = lists
+  lists = addQuestionTo(lists, a.id, draftOf(1))
+  lists = addQuestionTo(lists, b.id, draftOf(9))
+  assert.equal(lists[0].questions[0].id, lists[1].questions[0].id, '前提: id がぶつかっている')
+
+  const moving = lists[0].questions[0]
+  lists = moveQuestion(lists, a.id, b.id, moving.id)
+
+  assert.equal(lists[1].questions.length, 2, 'id の衝突で既存の質問が消えた')
+  assert.equal(new Set(lists[1].questions.map((q) => q.id)).size, 2, '移動先で id が重複している')
+  assert.ok(lists[1].questions.some((q) => q.text === 'Question 9?'), '元からあった質問が失われた')
+  assert.ok(lists[1].questions.some((q) => q.text === 'Question 1?'), '移動した質問が入っていない')
+}
+
+{
+  // おかしな指定では何も壊さない
+  let lists = [newPlaylist('A'), newPlaylist('B')]
+  const [a, b] = lists
+  lists = addQuestionTo(lists, a.id, draftOf(1))
+  const id = lists[0].questions[0].id
+
+  assert.deepEqual(moveQuestion(lists, a.id, a.id, id), lists, '同じ束への移動で書き換わった')
+  assert.deepEqual(moveQuestion(lists, a.id, 'missing', id), lists, '無い束への移動で書き換わった')
+  assert.deepEqual(moveQuestion(lists, a.id, b.id, 'missing'), lists, '無い質問の移動で書き換わった')
+
+  // 削除は指定した束からだけ
+  const after = removeQuestionFrom(lists, a.id, id)
+  assert.equal(after[0].questions.length, 0)
+  assert.equal(after[1].questions.length, 0)
+}
 
 /* --- 同期の合流 --- */
 

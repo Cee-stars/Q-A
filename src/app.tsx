@@ -19,11 +19,13 @@ import {
 import { pickDaily, pickFocus, type Level, type Question } from './questions'
 import { SEED_PLAYLIST_ID } from './playlists'
 import {
+  addQuestionTo,
   allPlaylists,
   isUsable,
+  moveQuestion,
   newPlaylist,
+  removeQuestionFrom,
   resolvePool,
-  newQuestion,
   type Playlist,
   type QuestionDraft,
 } from './playlists'
@@ -61,7 +63,7 @@ import {
   tomorrow,
 } from './storage'
 import { emptySnapshot, syncOnce, SyncError, type Snapshot } from './sync'
-import { findPlaylist, touch } from './playlists'
+import { findPlaylist } from './playlists'
 import { cueDone, cueNext, cueRep, cueStage, unlockAudio } from './cues'
 import { speak, stopSpeaking, supported as speechSupported, unlockSpeech } from './speech'
 import { keepAwake, releaseAwake } from './wakelock'
@@ -443,13 +445,9 @@ export function App() {
         <LibraryScreen
           playlists={playlists}
           settings={settings}
-          onChange={(next, changedId) => {
-            // 触った束だけ時刻を進める。これが無いと合流で古いほうが勝つ。
-            const stamped = changedId
-              ? next.map((p) => (p.id === changedId ? touch(p) : p))
-              : next
-            setPlaylists(stamped)
-            void savePlaylists(stamped)
+          onChange={(next) => {
+            setPlaylists(next)
+            void savePlaylists(next)
             if (settings.syncAuto) void sync()
           }}
           onSelect={(id) => patchSettings({ playlistId: id })}
@@ -986,7 +984,7 @@ function LibraryScreen({
 }: {
   playlists: Playlist[]
   settings: Settings
-  onChange: (next: Playlist[], changedId?: string) => void
+  onChange: (next: Playlist[]) => void
   onSelect: (id: string) => void
   onClose: () => void
 }) {
@@ -1001,11 +999,13 @@ function LibraryScreen({
   const [error, setError] = useState<string | null>(null)
 
   const open = playlists.find((p) => p.id === openId) ?? null
+  // 移動先の候補。束が1つしか無ければ移動先は無い。
+  const others = playlists.length > 1 ? playlists : []
 
   const addPlaylist = () => {
     if (name.trim().length === 0) return
     const created = newPlaylist(name.trim())
-    onChange([...playlists, created], created.id)
+    onChange([...playlists, created])
     setOpenId(created.id)
     setDraft(EMPTY_DRAFT)
     setName('')
@@ -1019,21 +1019,18 @@ function LibraryScreen({
 
   const addQuestion = () => {
     if (!open || draft.text.trim().length === 0 || draft.model.trim().length === 0) return
-    const question = newQuestion(open, draft)
-    onChange(
-      playlists.map((p) => (p.id === open.id ? { ...p, questions: [...p.questions, question] } : p)),
-      open.id,
-    )
+    onChange(addQuestionTo(playlists, open.id, draft))
     setDraft(EMPTY_DRAFT)
   }
 
   const removeQuestion = (playlistId: string, questionId: string) => {
-    onChange(
-      playlists.map((p) =>
-        p.id === playlistId ? { ...p, questions: p.questions.filter((q) => q.id !== questionId) } : p,
-      ),
-      playlistId,
-    )
+    onChange(removeQuestionFrom(playlists, playlistId, questionId))
+  }
+
+  /** 間違えた束に入れた質問を、消して書き直さずに移す。 */
+  const move = (fromId: string, toId: string, questionId: string) => {
+    if (!toId) return
+    onChange(moveQuestion(playlists, fromId, toId, questionId))
   }
 
   /** 英語か日本語を片方書けば、残りを埋めてもらう。3つとも手で書かせると足さなくなる。 */
@@ -1118,9 +1115,31 @@ function LibraryScreen({
                         <span>{q.ja}</span>
                         <em>{q.model}</em>
                       </div>
-                      <button class="stop" onClick={() => removeQuestion(p.id, q.id)}>
-                        削除
-                      </button>
+                      <div class="qactions">
+                        {others.length > 0 && (
+                          <select
+                            class="qmove"
+                            value=""
+                            onChange={(e) => {
+                              const target = e.target as HTMLSelectElement
+                              move(p.id, target.value, q.id)
+                              target.value = ''
+                            }}
+                          >
+                            <option value="">移動…</option>
+                            {others
+                              .filter((other) => other.id !== p.id)
+                              .map((other) => (
+                                <option key={other.id} value={other.id}>
+                                  {other.name} へ
+                                </option>
+                              ))}
+                          </select>
+                        )}
+                        <button class="stop" onClick={() => removeQuestion(p.id, q.id)}>
+                          削除
+                        </button>
+                      </div>
                     </li>
                   ))}
                 </ul>

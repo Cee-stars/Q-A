@@ -53,18 +53,82 @@ export interface QuestionDraft {
   level: Level
 }
 
-/** 自分で足した質問。id は束の中で一意であればよい。 */
-export function newQuestion(playlist: Playlist, draft: QuestionDraft): Question {
+/** その束の中で、まだ使われていない id。束をまたぐとぶつかるので必ず取り直す。 */
+function freeId(playlist: Playlist): string {
   const used = new Set(playlist.questions.map((q) => q.id))
   let n = playlist.questions.length + 1
   while (used.has(`u${n}`)) n++
+  return `u${n}`
+}
+
+/** 自分で足した質問。id は束の中で一意であればよい。 */
+export function newQuestion(playlist: Playlist, draft: QuestionDraft): Question {
   return {
-    id: `u${n}`,
+    id: freeId(playlist),
     text: draft.text.trim(),
     ja: draft.ja.trim(),
     model: draft.model.trim(),
     level: draft.level,
   }
+}
+
+/* ---------- 束の書き換え ----------
+ * 中身をいじる操作はすべてここを通す。触った束に必ず touch が掛かるので、
+ * 同期の合流で古いほうが勝つ事故を、呼び出し側が気をつけなくてよくなる。
+ */
+
+export function addQuestionTo(
+  playlists: Playlist[],
+  playlistId: string,
+  draft: QuestionDraft,
+): Playlist[] {
+  return playlists.map((p) =>
+    p.id === playlistId ? touch({ ...p, questions: [...p.questions, newQuestion(p, draft)] }) : p,
+  )
+}
+
+export function removeQuestionFrom(
+  playlists: Playlist[],
+  playlistId: string,
+  questionId: string,
+): Playlist[] {
+  return playlists.map((p) =>
+    p.id === playlistId
+      ? touch({ ...p, questions: p.questions.filter((q) => q.id !== questionId) })
+      : p,
+  )
+}
+
+/**
+ * 質問を別の束へ移す。間違えた束に入れてしまったときに、
+ * 消して書き直さずに済ませるためのもの。
+ *
+ * **移動元と移動先の両方に touch を掛ける。** 片方だけだと、同期の合流で
+ * 移動元の古い版が勝ち、同じ質問が両方の束に残る。
+ */
+export function moveQuestion(
+  playlists: Playlist[],
+  fromId: string,
+  toId: string,
+  questionId: string,
+): Playlist[] {
+  if (fromId === toId) return playlists
+  const from = playlists.find((p) => p.id === fromId)
+  const to = playlists.find((p) => p.id === toId)
+  const question = from?.questions.find((q) => q.id === questionId)
+  if (!from || !to || !question) return playlists
+
+  // id は束の中でしか一意でないので、移動先で取り直す。
+  // ぶつかったまま入れると、既にある質問が置き換わって消える。
+  const moved = { ...question, id: freeId(to) }
+
+  return playlists.map((p) => {
+    if (p.id === fromId) {
+      return touch({ ...p, questions: p.questions.filter((q) => q.id !== questionId) })
+    }
+    if (p.id === toId) return touch({ ...p, questions: [...p.questions, moved] })
+    return p
+  })
 }
 
 /** 出題に使える最低限を満たしているか。空の束からは1問も出せない。 */
