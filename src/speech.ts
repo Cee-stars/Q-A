@@ -61,12 +61,20 @@ export interface SpeakOptions {
   /** 設定で切ってあるときは何もしない。 */
   enabled: boolean
   rate?: number
+  /**
+   * 読み終わったときに呼ぶ。反射モードはここを 0ms として時間を測るので、
+   * **読み上げなかった場合もその場で呼ぶ**。呼ばないと計測が始まらない。
+   */
+  onEnd?: () => void
 }
 
 /** 英文を読み上げる。前の発話は必ず止める（重なると聞き取れない）。 */
-export function speak(text: string, { quiet, enabled, rate = 0.9 }: SpeakOptions): void {
+export function speak(text: string, { quiet, enabled, rate = 0.9, onEnd }: SpeakOptions): void {
   const s = synth()
-  if (!s || !enabled || quiet || text.trim().length === 0) return
+  if (!s || !enabled || quiet || text.trim().length === 0) {
+    onEnd?.()
+    return
+  }
   try {
     s.cancel()
     const utterance = new SpeechSynthesisUtterance(text)
@@ -75,9 +83,19 @@ export function speak(text: string, { quiet, enabled, rate = 0.9 }: SpeakOptions
     utterance.lang = voice?.lang ?? 'en-US'
     // 手本を真似して言うための読み上げなので、やや遅くする。
     utterance.rate = rate
+    let ended = false
+    const finish = () => {
+      if (ended) return
+      ended = true
+      onEnd?.()
+    }
+    utterance.onend = finish
+    utterance.onerror = finish
     s.speak(utterance)
+    // 端末によっては onend が来ない。計測が始まらないまま固まるので保険をかける。
+    if (onEnd) window.setTimeout(finish, 1_000 + text.length * 90)
   } catch {
-    // 読み上げが落ちても練習は続ける。
+    onEnd?.()
   }
 }
 

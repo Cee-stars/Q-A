@@ -25,6 +25,15 @@ import {
   seedPlaylist,
 } from '../src/playlists'
 import { emptySnapshot, mergeSnapshots, type Snapshot } from '../src/sync'
+import { median, OnsetDetector } from '../src/vad'
+import {
+  formatLatency,
+  missCount,
+  sessionMedian,
+  trend,
+  usableLatencies,
+  type ReflexAttempt,
+} from '../src/reflex'
 import {
   advance,
   createItem,
@@ -427,6 +436,97 @@ const snap = (over: Partial<Snapshot> = {}): Snapshot => ({ ...emptySnapshot(), 
   const ba = mergeSnapshots(b, a)
   assert.deepEqual(ab.records, ba.records, '合流の向きで記録が変わる')
   assert.deepEqual(ab.reviews, ba.reviews, '合流の向きで復習が変わる')
+}
+
+/* --- 発話の立ち上がり検出 --- */
+
+/** 一定間隔で音量を食わせて、報告された立ち上がり時刻を返す。 */
+const run = (levels: number[], noiseFloor: number, stepMs = 16): number | null => {
+  const d = new OnsetDetector({ noiseFloor })
+  for (let i = 0; i < levels.length; i++) {
+    const at = d.feed(i * stepMs, levels[i])
+    if (at !== null) return at
+  }
+  return null
+}
+
+const quiet = (n: number) => Array(n).fill(0.002)
+const loud = (n: number) => Array(n).fill(0.2)
+
+{
+  // 静かなまま続けば、何も検出しない
+  assert.equal(run(quiet(100), 0.002), null, '無音で誤検出した')
+
+  // 声が出たら、**超え始めた時刻**を返す（確定までの保持ぶん遅らせない）
+  const at = run([...quiet(30), ...loud(30)], 0.002)
+  assert.equal(at, 30 * 16, '立ち上がりの時刻が保持時間ぶんずれている')
+
+  // 単発のノイズでは反応しない（机を叩く音など）
+  assert.equal(
+    run([...quiet(30), 0.5, ...quiet(60)], 0.002),
+    null,
+    '単発のノイズで誤検出した',
+  )
+
+  // 開始直後は無視する（読み上げの残響を自分の声と数えない）
+  assert.equal(run(loud(4), 0.002), null, 'ガード時間中に検出した')
+  assert.ok((run(loud(40), 0.002) ?? 0) >= 120, 'ガード時間より前の時刻を返した')
+
+  // うるさい部屋では、基準が上がってしきい値も上がる
+  assert.equal(run(Array(100).fill(0.05), 0.05), null, '騒音をそのまま声として数えた')
+  assert.ok(run([...Array(30).fill(0.05), ...Array(30).fill(0.4)], 0.05) !== null, '騒音下で声を拾えない')
+
+  // 一度決まったら動かない
+  const d = new OnsetDetector({ noiseFloor: 0.002 })
+  for (let i = 0; i < 40; i++) d.feed(i * 16, 0.2)
+  const first = d.detected
+  d.feed(2000, 0.9)
+  assert.equal(d.detected, first, '検出後に時刻が上書きされた')
+}
+
+/* --- 反射モードの集計 --- */
+
+function attempt(latencyMs: number | null, suspicious = false): ReflexAttempt {
+  return { questionId: 'q', question: 'Q?', ja: '質問', latencyMs, suspicious }
+}
+
+{
+  assert.equal(median([]), null)
+  assert.equal(median([300]), 300)
+  assert.equal(median([300, 100, 200]), 200, '中央値が違う')
+  assert.equal(median([400, 100, 200, 300]), 250, '偶数個の中央値が違う')
+
+  // 声が出なかった試行は集計から外す。0秒として混ぜると中央値が嘘になる。
+  const mixed = [attempt(800), attempt(null), attempt(400), attempt(600)]
+  assert.deepEqual(usableLatencies(mixed), [800, 400, 600])
+  assert.equal(sessionMedian(mixed), 600)
+  assert.equal(missCount(mixed), 1)
+
+  // 残響の疑いがあるものも外す
+  const withEcho = [attempt(900), attempt(80, true), attempt(700)]
+  assert.deepEqual(usableLatencies(withEcho), [900, 700], '疑わしい値を集計に入れている')
+  assert.equal(sessionMedian(withEcho), 800)
+
+  // 全部だめなら null。0 と区別する。
+  assert.equal(sessionMedian([attempt(null), attempt(null)]), null)
+  assert.equal(formatLatency(null), '—')
+  assert.equal(formatLatency(1234), '1.23秒')
+}
+
+{
+  // 推移は、測れた日だけを新しい順に
+  const rec = (date: string, attempts: ReflexAttempt[]) => ({
+    date, playlistId: 'seed', attempts, updatedAt: 0,
+  })
+  const got = trend([
+    rec('2026-10-03', [attempt(900), attempt(1100)]),
+    rec('2026-10-02', [attempt(null)]),
+    rec('2026-10-01', [attempt(1500)]),
+  ])
+  assert.deepEqual(got, [
+    { date: '2026-10-03', ms: 1000 },
+    { date: '2026-10-01', ms: 1500 },
+  ], '測れなかった日を混ぜている')
 }
 
 console.log('logic: all assertions passed')

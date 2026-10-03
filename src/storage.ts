@@ -10,6 +10,7 @@ const set = (key: string, value: unknown) => idbSet(key, value, store)
 import type { ReviewItem } from './review'
 import type { Question } from './questions'
 import type { Playlist } from './playlists'
+import type { ReflexRecord } from './reflex'
 
 const RECORDS_KEY = 'qa:records'
 const SETTINGS_KEY = 'qa:settings'
@@ -157,6 +158,28 @@ export async function loadReviews(): Promise<ReviewItem[]> {
 
 export async function saveReviews(items: ReviewItem[]): Promise<void> {
   await set(REVIEWS_KEY, items)
+}
+
+// --- 反射モードの記録 ---
+
+const REFLEX_KEY = 'qa:reflex'
+
+export async function loadReflex(): Promise<ReflexRecord[]> {
+  return (await get<ReflexRecord[]>(REFLEX_KEY)) ?? []
+}
+
+/** 1日1行。同じ日にやり直したら上書きする。 */
+export async function saveReflexRecord(record: ReflexRecord): Promise<ReflexRecord[]> {
+  const records = await loadReflex()
+  const next = [...records.filter((r) => r.date !== record.date), record].sort((a, b) =>
+    b.date.localeCompare(a.date),
+  )
+  await set(REFLEX_KEY, next)
+  return next
+}
+
+export async function saveReflex(records: ReflexRecord[]): Promise<void> {
+  await set(REFLEX_KEY, records)
 }
 
 // --- プレイリスト ---

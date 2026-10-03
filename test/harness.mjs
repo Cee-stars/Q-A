@@ -3,7 +3,7 @@ import { chromium } from 'playwright'
 import { createServer } from 'node:http'
 import { readFile } from 'node:fs/promises'
 import { existsSync, readdirSync } from 'node:fs'
-import { extname, join, normalize } from 'node:path'
+import { extname, join, normalize, resolve } from 'node:path'
 
 const ROOT = 'dist'
 const TYPES = {
@@ -25,7 +25,7 @@ function findChromium() {
   return undefined
 }
 
-export async function launch({ time } = {}) {
+export async function launch({ time, fakeAudio } = {}) {
   const server = createServer(async (req, res) => {
     const path = decodeURIComponent(new URL(req.url, 'http://x').pathname).replace(/^\/Q-A/, '')
     const safe = normalize(path).replace(/^(\.\.[/\\])+/, '')
@@ -41,8 +41,22 @@ export async function launch({ time } = {}) {
   await new Promise((resolve) => server.listen(0, resolve))
   const base = `http://localhost:${server.address().port}/Q-A/`
 
-  const browser = await chromium.launch({ executablePath: findChromium() })
-  const page = await browser.newPage({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2 })
+  // 偽のマイクを挿す。実際の音を流し込めるので、測定の配線まで確かめられる。
+  const args = fakeAudio
+    ? [
+        '--use-fake-device-for-media-stream',
+        '--use-fake-ui-for-media-stream',
+        `--use-file-for-fake-audio-capture=${resolve(fakeAudio)}`,
+        '--autoplay-policy=no-user-gesture-required',
+      ]
+    : []
+  const browser = await chromium.launch({ executablePath: findChromium(), args })
+  const context = await browser.newContext({
+    viewport: { width: 390, height: 844 },
+    deviceScaleFactor: 2,
+    permissions: fakeAudio ? ['microphone'] : [],
+  })
+  const page = await context.newPage()
   page.on('pageerror', (e) => {
     console.error('PAGE ERROR:', e.message)
     process.exitCode = 1

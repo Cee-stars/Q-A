@@ -899,3 +899,133 @@ button {
   font-family: inherit;
   max-width: 130px;
 }
+
+/* ---------- 反射モード ---------- */
+
+.reflex {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  flex: 1;
+}
+
+.reflex.center {
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
+
+.big-hint {
+  margin: 0;
+  font-size: 28px;
+  font-weight: 700;
+}
+
+.frame-card {
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: 16px;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.frame-label {
+  margin: 0;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.frame-text {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.frame-ja {
+  margin: 0;
+  font-size: 14px;
+  color: var(--dim);
+}
+
+.reflex-notes {
+  margin: 0;
+  padding-left: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  font-size: 14px;
+  line-height: 1.6;
+  color: var(--dim);
+}
+
+.reflex-median {
+  margin: 0;
+  font-size: 40px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.reflex-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.reflex-list li {
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  justify-content: space-between;
+  border-top: 1px solid var(--line);
+  padding: 10px 0;
+  font-size: 14px;
+}
+
+.reflex-list b {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.reflex-list b.miss,
+.reflex-result strong.miss {
+  color: var(--dim);
+}
+
+.reflex-result {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.reflex-result strong {
+  font-size: 46px;
+  font-variant-numeric: tabular-nums;
+}
+
+.secondary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 16px;
+  font-size: 15px;
+  font-weight: 600;
+  text-align: left;
+}
+
+.secondary b {
+  color: var(--accent-ink);
+  font-variant-numeric: tabular-nums;
+}

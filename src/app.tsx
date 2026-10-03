@@ -47,6 +47,7 @@ import {
   loadGenerated,
   loadPlaylists,
   loadRecords,
+  loadReflex,
   loadReviews,
   loadSettings,
   recentQuestionIds,
@@ -55,6 +56,7 @@ import {
   savePlaylists,
   saveRecord,
   saveRecords,
+  saveReflexRecord,
   saveReviews,
   saveSettings,
   type SessionRecord,
@@ -65,6 +67,8 @@ import {
 } from './storage'
 import { emptySnapshot, syncOnce, SyncError, type Snapshot } from './sync'
 import { findPlaylist } from './playlists'
+import { ReflexMode } from './ReflexMode'
+import { sessionMedian, formatLatency, type ReflexAttempt, type ReflexRecord } from './reflex'
 import { cueDone, cueNext, cueRep, cueStage, unlockAudio } from './cues'
 import { speak, stopSpeaking, supported as speechSupported, unlockSpeech } from './speech'
 import { keepAwake, releaseAwake } from './wakelock'
@@ -151,7 +155,8 @@ export function App() {
   const [playlists, setPlaylists] = useState<Playlist[]>([])
   const [settings, setSettings] = useState<Settings>(DEFAULT_SETTINGS)
   const [prefetched, setPrefetched] = useState<Question[] | null>(null)
-  const [screen, setScreen] = useState<'drill' | 'settings' | 'library'>('drill')
+  const [screen, setScreen] = useState<'drill' | 'settings' | 'library' | 'reflex'>('drill')
+  const [reflexRecords, setReflexRecords] = useState<ReflexRecord[]>([])
   const [syncState, setSyncState] = useState<'idle' | 'running' | 'ok' | 'error'>('idle')
   const [syncError, setSyncError] = useState<string | null>(null)
   const [now, setNow] = useState(Date.now())
@@ -162,6 +167,7 @@ export function App() {
     void loadPlaylists().then(setPlaylists)
     void loadSettings().then(setSettings)
     void loadGenerated(today()).then(setPrefetched)
+    void loadReflex().then(setReflexRecords)
   }, [])
 
 
@@ -447,6 +453,29 @@ export function App() {
     )
   }
 
+  if (screen === 'reflex') {
+    const pool = resolvePool(playlists, settings.playlistId)
+    return (
+      <main class="screen">
+        <ReflexMode
+          questions={pickDaily(today(), pool.questions, recentQuestionIds(records))}
+          settings={settings}
+          onFinish={(attempts: ReflexAttempt[]) => {
+            const record: ReflexRecord = {
+              date: today(),
+              playlistId: settings.playlistId,
+              attempts,
+              updatedAt: Date.now(),
+            }
+            void saveReflexRecord(record).then(setReflexRecords)
+            setScreen('drill')
+          }}
+          onClose={() => setScreen('drill')}
+        />
+      </main>
+    )
+  }
+
   if (screen === 'library') {
     return (
       <main class="screen">
@@ -480,6 +509,8 @@ export function App() {
           onPatchSettings={patchSettings}
           onOpenSettings={() => setScreen('settings')}
           onOpenLibrary={() => setScreen('library')}
+          onOpenReflex={() => setScreen('reflex')}
+          reflexRecords={reflexRecords}
           onStart={start}
         />
       )}
@@ -858,6 +889,8 @@ function IdleScreen({
   onPatchSettings,
   onOpenSettings,
   onOpenLibrary,
+  onOpenReflex,
+  reflexRecords,
   onStart,
 }: {
   records: SessionRecord[]
@@ -871,6 +904,8 @@ function IdleScreen({
   onPatchSettings: (patch: Partial<Settings>) => void
   onOpenSettings: () => void
   onOpenLibrary: () => void
+  onOpenReflex: () => void
+  reflexRecords: ReflexRecord[]
   onStart: () => void
 }) {
   const days = streak(records)
@@ -878,6 +913,7 @@ function IdleScreen({
   const elsewhere = dueElsewhere(reviews, today(), settings.playlistId)
   const selected = findPlaylist(playlists, settings.playlistId)
   const emptySelected = !isUsable(selected)
+  const reflexMedian = reflexRecords[0] ? sessionMedian(reflexRecords[0].attempts) : null
   const todayRecord = records.find((r) => r.date === today())
   const options = allPlaylists(playlists)
   return (
@@ -940,6 +976,11 @@ function IdleScreen({
         {days > 0 && <span class="chip flat">{days}日連続</span>}
       </div>
       {syncError && <p class="error">{syncError}</p>}
+
+      <button class="secondary" onClick={onOpenReflex}>
+        <span>反射 — 何秒で声が出るか測る</span>
+        {reflexMedian !== null && <b>{formatLatency(reflexMedian)}</b>}
+      </button>
 
       <section class="log">
         <h2>{CHECKLIST_LABEL}</h2>
