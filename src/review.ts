@@ -70,36 +70,6 @@ export function homeOf(item: ReviewItem): string {
 }
 
 /**
- * その日の復習カードを選ぶ。
- *   1. 期限が来たもの（遅れている順）
- *   2. 埋まらなければ、卒業済みのものを古い順に混ぜる（枠を遊ばせない）
- * 足りないぶんは呼び出し側が質問の音読で埋める。
- *
- * **いま使っている束のものだけを出す。** 別の束の質問が混ざると、
- * その束を選んだ意味が無くなる。
- */
-export function selectForReview(
-  items: ReviewItem[],
-  date: string,
-  slots: number,
-  playlistId: string = SEED_PLAYLIST_ID,
-): ReviewItem[] {
-  const mine = items.filter((i) => homeOf(i) === playlistId)
-  const due = mine
-    .filter((i) => !isGraduated(i) && i.due <= date)
-    .sort((a, b) => a.due.localeCompare(b.due) || a.createdAt.localeCompare(b.createdAt))
-
-  if (due.length >= slots) return due.slice(0, slots)
-
-  const chosen = new Set(due.map((i) => i.id))
-  const spare = mine
-    .filter((i) => isGraduated(i) && !chosen.has(i.id))
-    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
-
-  return [...due, ...spare.slice(0, slots - due.length)]
-}
-
-/**
  * 期限が来ていて、まだ卒業していない項目の数。溜まり具合の目安。
  * 束を指定すればその束のぶんだけ、省けば全部。
  */

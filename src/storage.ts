@@ -27,6 +27,9 @@ export interface SessionRecord {
   rewrite: string
   /** その日に復習した枚数。 */
   reviewed: number
+  /** 進んだカード枚数と全体。カード形式になってからの記録にだけ入る。 */
+  cards?: number
+  cardsTotal?: number
   quiet: boolean
   updatedAt: number
 }
@@ -35,8 +38,10 @@ export interface Settings {
   quiet: boolean
   /** 出題に使うプレイリスト。消えていたら種問題に落ちる。 */
   playlistId: string
-  /** 英語を読み上げる。工程4の手本と、復習で出た文に効く。 */
+  /** 英語を読み上げる。 */
   speak: boolean
+  /** 1枚に答える時間。1〜10秒。 */
+  answerWindowMs: number
   /** 端末どうしの同期。瞬間英作文アプリと同じ Gist を指してよい。 */
   syncToken: string
   syncGistId: string
@@ -55,6 +60,7 @@ export const DEFAULT_SETTINGS: Settings = {
   quiet: false,
   playlistId: 'seed',
   speak: true,
+  answerWindowMs: 5_000,
   syncToken: '',
   syncGistId: '',
   syncAuto: true,

@@ -1029,3 +1029,108 @@ button {
   color: var(--accent-ink);
   font-variant-numeric: tabular-nums;
 }
+
+/* ---------- カード形式 ---------- */
+
+.card-drill {
+  gap: 24px;
+}
+
+.card-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  justify-content: center;
+}
+
+/* 伏せてあるものを開けるボタン。押す前は何が出るかだけ分かればよい。 */
+.reveal {
+  align-self: flex-start;
+  border: 1px dashed var(--line);
+  border-radius: 999px;
+  padding: 10px 16px;
+  font-size: 14px;
+  color: var(--dim);
+  background: var(--surface);
+}
+
+.answer-box {
+  background: var(--surface);
+  border: 1px solid var(--accent);
+  border-radius: 16px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+}
+
+.answer-label {
+  margin: 0;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.answer-text {
+  margin: 0;
+  font-size: 20px;
+  line-height: 1.5;
+  font-weight: 600;
+}
+
+.clock.out {
+  color: var(--accent-ink);
+}
+
+.progress {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.progress-bar {
+  width: 60px;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--line);
+  overflow: hidden;
+}
+
+.progress-bar i {
+  display: block;
+  width: 100%;
+  height: 100%;
+  background: var(--accent);
+  transform-origin: left;
+}
+
+.progress-text {
+  font-size: 13px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}
+
+.progress-text.old {
+  font-size: 12px;
+}
+
+.window-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 14px;
+  color: var(--dim);
+}
+
+.window-row input {
+  flex: 1;
+  accent-color: var(--accent);
+}
+
+.window-row b {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  min-width: 44px;
+  text-align: right;
+}

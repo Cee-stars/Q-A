@@ -33,8 +33,8 @@ async function routeGist(route) {
   await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ id: GIST_ID, files: gist.files }) })
 }
 
-/** 1台ぶん。設定を入れてから、指定の到達工程までセッションを進める。 */
-async function device(label, { reach }) {
+/** 1台ぶん。設定を入れてから、指定の枚数までセッションを進める。 */
+async function device(label, { cards }) {
   const d = await launch({ time: DAY1 })
   await d.page.route('**://api.github.com/gists**', routeGist)
   await d.page.goto(d.base)
@@ -46,33 +46,23 @@ async function device(label, { reach }) {
   await d.page.getByRole('button', { name: '保存' }).click()
   await d.page.getByRole('button', { name: /開始/ }).waitFor()
 
-  await d.page.getByRole('button', { name: /開始/ }).click()
-  await d.page.locator('.card').waitFor()
-  await d.page.clock.runFor(80_500) // 復習
-  if (reach >= 4) {
-    await d.page.clock.runFor(20_500) // 挑戦
-    await d.page.getByRole('button', { name: '言い直しへ' }).click()
-    await d.page.clock.runFor(81_000) // 言い直し3回
-    await d.page.locator('.done').waitFor()
-    await d.page.locator('.done .primary').click()
-  } else {
-    await d.page.clock.runFor(5_000)
-    await d.page.getByRole('button', { name: '終了' }).click()
-  }
-  await d.page.locator('.log li').first().waitFor()
-  const dots = await d.page.locator('.log li').first().locator('.dot.on').count()
-  assert.equal(dots, reach, `${label}: 到達工程が違う`)
+  await d.runSession(cards === 8 ? {} : { stopAfter: cards })
+  await d.page.waitForFunction(
+    (want) => new RegExp(`${want} / 8`).test(document.querySelector('.log li')?.textContent ?? ''),
+    cards,
+    { timeout: 5_000 },
+  )
   return d
 }
 
 /* --- 1台目: 最後まで通す（到達5）。完了時に自動で同期される --- */
 
-const a = await device('A', { reach: 5 })
+const a = await device('A', { cards: 8 })
 await a.page.waitForFunction(() => !document.body.innerText.includes('同期中'))
 assert.ok(gist.files['qa-drill-data.json'], '自分のファイル名で置かれていない')
 const stored = JSON.parse(gist.files['qa-drill-data.json'].content)
 assert.equal(stored.version, 1)
-assert.equal(stored.records[0].reached, 5, '置き場に完了が届いていない')
+assert.equal(stored.records[0].cards, 8, '置き場に完了が届いていない')
 assert.ok(stored.reviews.length >= 1, '持ち帰りが同期されていない')
 assert.ok(!JSON.stringify(stored).includes(TOKEN), 'トークンが置き場に漏れている')
 assert.ok(!JSON.stringify(stored).includes('apiKey'), 'APIキーが置き場に漏れている')
@@ -84,22 +74,16 @@ gist.files['sunkan-data.json'] = { content: '{"other":"app"}' }
 
 /* --- 2台目: 途中で止める（到達3）。合流しても1台目の完了が勝つ --- */
 
-const b = await device('B', { reach: 3 })
+const b = await device('B', { cards: 3 })
 await b.page.getByRole('button', { name: /同期/ }).click()
-await b.page.waitForFunction(() => {
-  const row = document.querySelector('.log li')
-  return row && row.querySelectorAll('.dot.on').length === 5
-}, null, { timeout: 10_000 })
-
-assert.equal(
-  await b.page.locator('.log li').first().locator('.dot.on').count(),
-  5,
-  '同期で完了が取り込まれていない',
+await b.page.waitForFunction(
+  () => /8 \/ 8/.test(document.querySelector('.log li')?.textContent ?? ''),
+  null,
+  { timeout: 10_000 },
 )
-assert.match(await b.text('.log li'), /完了/)
 
 const after = JSON.parse(gist.files['qa-drill-data.json'].content)
-assert.equal(after.records[0].reached, 5, '途中で止めた端末が、完了の記録を巻き戻した')
+assert.equal(after.records[0].cards, 8, '途中で止めた端末が、完了の記録を巻き戻した')
 assert.equal(gist.files['sunkan-data.json'].content, '{"other":"app"}', '同居アプリのファイルを壊した')
 assert.ok(seen.get > 0 && seen.patch > 0, '読み書きが片方しか起きていない')
 assert.deepEqual([...seen.auth], [`token ${TOKEN}`], '認証ヘッダが想定と違う')

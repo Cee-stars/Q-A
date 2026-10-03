@@ -1,26 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks'
+import { pickDaily, type Level, type Question } from './questions'
 import {
-  ATTEMPT_MS,
-  formatClock,
-  MODEL_MS,
-  Phase,
-  REVIEW_CARD_MS,
-  REVIEW_MS,
-  REVIEW_RECALL_MS,
-  REVIEW_SLOTS,
-  PARTIAL_WORDS,
-  RESPEAK_ROUNDS_MS,
-  RESPEAK_SCAFFOLD,
-  reachedFor,
-  STAGES,
-  TOTAL_MS,
-  WARMUP_PER_QUESTION_MS,
-} from './session'
-import { pickDaily, pickFocus, type Level, type Question } from './questions'
+  buildCards,
+  CARDS_PER_SESSION,
+  clampWindow,
+  MAX_WINDOW_MS,
+  MIN_WINDOW_MS,
+  type Card,
+} from './cards'
+import { CardDrill } from './CardDrill'
 import { SEED_PLAYLIST_ID } from './playlists'
 import {
   addQuestionTo,
   allPlaylists,
+  findPlaylist,
   isUsable,
   moveQuestion,
   newPlaylist,
@@ -29,15 +22,15 @@ import {
   type Playlist,
   type QuestionDraft,
 } from './playlists'
-import { correct, describeError, fillQuestion, generateQuestions, type Correction } from './claude'
+import { describeError, fillQuestion, generateQuestions } from './claude'
 import { DEFAULT_CORRECTION_PROMPT, DEFAULT_GENERATION_PROMPT } from './prompts'
 import {
   advance as advanceItem,
   createItem,
   dueCount,
   dueElsewhere,
+  isGraduated,
   type ReviewItem,
-  selectForReview,
 } from './review'
 import {
   canSync,
@@ -66,90 +59,24 @@ import {
   tomorrow,
 } from './storage'
 import { emptySnapshot, syncOnce, SyncError, type Snapshot } from './sync'
-import { findPlaylist } from './playlists'
 import { ReflexMode } from './ReflexMode'
 import { sessionMedian, formatLatency, type ReflexAttempt, type ReflexRecord } from './reflex'
-import { cueDone, cueNext, cueRep, cueStage, unlockAudio } from './cues'
-import { speak, stopSpeaking, supported as speechSupported, unlockSpeech } from './speech'
+import { unlockAudio } from './cues'
+import { stopSpeaking, supported as speechSupported, unlockSpeech } from './speech'
 import { keepAwake, releaseAwake } from './wakelock'
 
-const CHECKLIST_LABEL = '質問応答（復習→挑戦→手本→言い直し）'
-
-/** 工程2 の中身。復習カードを並べ、余った時間を質問の音読で埋める。 */
-interface Segment {
-  kind: 'card' | 'warmup'
-  item: ReviewItem | null
-  startAt: number
-  ms: number
-}
-
-function buildSegments(cards: ReviewItem[]): Segment[] {
-  const segments: Segment[] = cards.map((item, i) => ({
-    kind: 'card',
-    item,
-    startAt: i * REVIEW_CARD_MS,
-    ms: REVIEW_CARD_MS,
-  }))
-  const used = cards.length * REVIEW_CARD_MS
-  if (used < REVIEW_MS) {
-    segments.push({ kind: 'warmup', item: null, startAt: used, ms: REVIEW_MS - used })
-  }
-  return segments
-}
-
-function segmentAt(segments: Segment[], elapsed: number): { index: number; local: number } {
-  for (let i = segments.length - 1; i >= 0; i--) {
-    if (elapsed >= segments[i].startAt) return { index: i, local: elapsed - segments[i].startAt }
-  }
-  return { index: 0, local: 0 }
-}
+const CHECKLIST_LABEL = '質問応答（カード）'
 
 interface Run {
-  phase: Phase
-  endsAt: number
-  ten: Question[]
-  focus: Question | null
-  /** 工程5の何回目か。 */
-  round: number
-  segments: Segment[]
-  /** 学習者が書いた（話した）そのままの文。 */
-  answer: string
-  correcting: boolean
-  correction: Correction | null
-  error: string | null
-  cueKey: string
+  active: boolean
+  cards: Card[]
+  done: number
 }
 
-const IDLE: Run = {
-  phase: 'idle',
-  endsAt: 0,
-  ten: [],
-  focus: null,
-  round: 0,
-  segments: [],
-  answer: '',
-  correcting: false,
-  correction: null,
-  error: null,
-  cueKey: '',
-}
-
-/**
- * その日の持ち帰り。言い直しで口に出し、後日の復習に入る文。
- * 添削が返ればそれ、自分で書いていればそれ、何も無ければ手本。
- * **必ず何かが残る**のが要点で、何も書けなかった日でも持ち帰りが空にならない。
- */
-function takeaway(r: Run): string {
-  if (r.correction) return r.correction.corrected
-  if (r.answer.trim()) return r.answer.trim()
-  return r.focus?.model ?? ''
-}
+const IDLE: Run = { active: false, cards: [], done: 0 }
 
 export function App() {
-  const run = useRef<Run>(IDLE)
-  const [, forceRender] = useState(0)
-  const rerender = useCallback(() => forceRender((n) => n + 1), [])
-
+  const [run, setRun] = useState<Run>(IDLE)
   const [records, setRecords] = useState<SessionRecord[]>([])
   const [reviews, setReviews] = useState<ReviewItem[]>([])
   const [playlists, setPlaylists] = useState<Playlist[]>([])
@@ -159,7 +86,6 @@ export function App() {
   const [reflexRecords, setReflexRecords] = useState<ReflexRecord[]>([])
   const [syncState, setSyncState] = useState<'idle' | 'running' | 'ok' | 'error'>('idle')
   const [syncError, setSyncError] = useState<string | null>(null)
-  const [now, setNow] = useState(Date.now())
 
   useEffect(() => {
     void loadRecords().then(setRecords)
@@ -170,13 +96,6 @@ export function App() {
     void loadReflex().then(setReflexRecords)
   }, [])
 
-
-  const voice = { quiet: settings.quiet, enabled: settings.speak }
-
-  /**
-   * 1往復ぶんの同期。読んで合流させて書き戻し、合流結果を端末にも反映する。
-   * 失敗しても練習は止めない（記録は端末に残っている）。
-   */
   const sync = useCallback(async () => {
     if (!canSync(settings)) return
     setSyncState('running')
@@ -191,7 +110,6 @@ export function App() {
         asked: await loadAsked(),
       }
       const { gistId, merged } = await syncOnce(settings.syncToken, settings.syncGistId, local)
-
       await Promise.all([
         saveReviews(merged.reviews),
         savePlaylists(merged.playlists),
@@ -215,152 +133,36 @@ export function App() {
     }
   }, [settings])
 
+  const booted = useRef(false)
+  useEffect(() => {
+    if (booted.current || !settings.syncAuto || !canSync(settings)) return
+    booted.current = true
+    void sync()
+  }, [settings, sync])
 
+  /**
+   * 途中で閉じても、どこまで進んだかが残るように、1枚ごとに書く。
+   * 同期の前には必ず待つこと。待たないと、1枚古い記録を置き場に送る。
+   */
   const persist = useCallback(
-    (r: Run) => {
+    (cards: Card[], done: number): Promise<void> => {
       const record: SessionRecord = {
         date: today(),
-        reached: reachedFor(r.phase),
-        questionIds: r.ten.map((q) => q.id),
-        answeredIds: r.focus ? [r.focus.id] : [],
-        pickedId: r.focus?.id ?? null,
-        rewrite: takeaway(r),
-        reviewed: r.segments.filter((s) => s.kind === 'card').length,
+        reached: 0,
+        cards: done,
+        cardsTotal: cards.length,
+        questionIds: [],
+        answeredIds: [],
+        pickedId: null,
+        rewrite: '',
+        reviewed: cards.filter((c) => c.kind === 'review').length,
         quiet: settings.quiet,
         updatedAt: Date.now(),
       }
-      void saveRecord(record).then(setRecords)
+      return saveRecord(record).then(setRecords)
     },
     [settings.quiet],
   )
-
-  const commitReviews = useCallback((r: Run) => {
-    const date = today()
-    const shown = new Set(
-      r.segments.filter((s) => s.item).map((s) => (s.item as ReviewItem).id),
-    )
-    setReviews((current) => {
-      const next = current.map((i) => (shown.has(i.id) ? advanceItem(i, date) : i))
-      void saveReviews(next)
-      return next
-    })
-  }, [])
-
-  const enqueueTakeaway = useCallback((r: Run) => {
-    const sentence = takeaway(r)
-    if (!r.focus || sentence.trim().length === 0) return
-    const item = createItem(
-      r.focus.text,
-      r.focus.ja,
-      sentence.trim(),
-      today(),
-      settings.playlistId,
-    )
-    setReviews((current) => {
-      const next = [...current, item]
-      void saveReviews(next)
-      return next
-    })
-  }, [settings.playlistId])
-
-  const prefetchNext = useCallback(async () => {
-    if (!hasApiKey(settings)) return
-    const date = tomorrow()
-    if (await loadGenerated(date)) return
-    try {
-      const generated = await generateQuestions(settings, await loadAsked())
-      await saveGenerated(date, generated)
-    } catch {
-      // 明日は種問題バンクで練習すればよい。
-    }
-  }, [settings])
-
-  const advance = useCallback(() => {
-    const r = run.current
-    const cue = { quiet: settings.quiet }
-
-    switch (r.phase) {
-      case 'review':
-        commitReviews(r)
-        r.phase = 'attempt'
-        r.endsAt = Date.now() + ATTEMPT_MS
-        cueStage(cue)
-        if (r.focus) speak(r.focus.text, voice)
-        break
-      case 'attempt':
-        r.phase = 'model'
-        r.endsAt = Date.now() + MODEL_MS
-        cueStage(cue)
-        // 手本を聞かせる。真似して言うには、読むだけでなく音が要る。
-        speak(takeaway(r), voice)
-        break
-      case 'model':
-        enqueueTakeaway(r)
-        r.phase = 'respeak'
-        r.round = 0
-        r.endsAt = Date.now() + RESPEAK_ROUNDS_MS[0]
-        stopSpeaking()
-        cueStage(cue)
-        break
-      case 'respeak':
-        if (r.round < RESPEAK_ROUNDS_MS.length - 1) {
-          r.round += 1
-          r.endsAt = Date.now() + RESPEAK_ROUNDS_MS[r.round]
-          cueNext(cue)
-        } else {
-          r.phase = 'done'
-          releaseAwake()
-          cueDone(cue)
-          void prefetchNext()
-          if (settings.syncAuto) void sync()
-        }
-        break
-      default:
-        return
-    }
-    r.cueKey = ''
-    setNow(Date.now())
-    persist(r)
-    rerender()
-  }, [
-    commitReviews,
-    enqueueTakeaway,
-    persist,
-    prefetchNext,
-    rerender,
-    settings.quiet,
-    settings.syncAuto,
-    sync,
-    voice,
-  ])
-
-  const innerCue = useCallback(
-    (r: Run, t: number) => {
-      if (r.phase !== 'review') return
-      const { index, local } = segmentAt(r.segments, REVIEW_MS - (r.endsAt - t))
-      const seg = r.segments[index]
-      const revealed = seg.kind === 'card' && local >= REVIEW_RECALL_MS
-      const key = `${index}:${revealed ? 'a' : 'q'}`
-      if (key === r.cueKey) return
-      if (r.cueKey !== '') cueRep({ quiet: settings.quiet })
-      // 答えが出た瞬間に読み上げる。思い出している間は黙っている。
-      if (revealed && seg.item) speak(seg.item.sentence, voice)
-      r.cueKey = key
-    },
-    [settings.quiet, voice],
-  )
-
-  useEffect(() => {
-    const id = window.setInterval(() => {
-      const r = run.current
-      const t = Date.now()
-      setNow(t)
-      if (r.phase === 'idle' || r.phase === 'done') return
-      innerCue(r, t)
-      if (t >= r.endsAt) advance()
-    }, 100)
-    return () => window.clearInterval(id)
-  }, [advance, innerCue])
 
   const start = useCallback(() => {
     unlockAudio()
@@ -368,90 +170,90 @@ export function App() {
     keepAwake()
     const date = today()
     const pool = resolvePool(playlists, settings.playlistId)
-    // 自分で束を選んでいるなら、先読み生成より選択のほうが優先。
-    // ここを逆にすると「選んだはずの束と違う問題が出る」になる。
     const usePrefetched = prefetched !== null && settings.playlistId === SEED_PLAYLIST_ID
     const ten = usePrefetched
       ? (prefetched as Question[])
       : pickDaily(date, pool.questions, recentQuestionIds(records))
-    run.current = {
-      ...IDLE,
-      phase: 'review',
-      endsAt: Date.now() + REVIEW_MS,
-      ten,
-      focus: pickFocus(date, ten),
-      // いま使っている束の持ち帰りだけを復習に出す。
-      segments: buildSegments(selectForReview(reviews, date, REVIEW_SLOTS, settings.playlistId)),
-    }
-    cueStage({ quiet: settings.quiet })
-    setNow(Date.now())
-    persist(run.current)
-    rerender()
+    const cards = buildCards(ten, reviews, date, settings.playlistId)
+    setRun({ active: true, cards, done: 0 })
+    persist(cards, 0)
     void loadAsked().then((asked) => saveAsked([...asked, ...ten.map((q) => q.text)]))
-  }, [persist, playlists, prefetched, records, reviews, rerender, settings])
+  }, [persist, playlists, prefetched, records, reviews, settings.playlistId])
 
-  const stop = useCallback(() => {
-    persist(run.current)
-    releaseAwake()
-    stopSpeaking()
-    run.current = { ...IDLE }
-    rerender()
-  }, [persist, rerender])
+  /**
+   * 1枚終えるごとに、復習の予定を動かす。
+   *   - 新しい質問で答え方を見た → 言えなかったので、復習に積む
+   *   - 復習カードを自力で言えた → 次の間隔へ進める
+   *   - 復習カードでまた見た → 進めない。間隔を進めると、言えないまま卒業する
+   */
+  const handleCard = useCallback(
+    (card: Card, usedHelp: boolean, done: number) => {
+      void persist(run.cards, done)
+      const date = today()
 
-  const patchSettings = useCallback(
-    (patch: Partial<Settings>) => {
-      setSettings((current) => {
-        const next = { ...current, ...patch }
-        void saveSettings(next)
+      if (card.kind === 'question') {
+        if (!usedHelp) return
+        setReviews((current) => {
+          // 同じ質問が未卒業で残っているなら、二重に積まない。
+          if (current.some((i) => i.question === card.question && !isGraduated(i))) return current
+          const next = [
+            ...current,
+            createItem(card.question, card.ja, card.answer, date, settings.playlistId),
+          ]
+          void saveReviews(next)
+          return next
+        })
+        return
+      }
+
+      if (usedHelp) return
+      setReviews((current) => {
+        const next = current.map((i) => (i.id === card.reviewId ? advanceItem(i, date) : i))
+        void saveReviews(next)
         return next
       })
     },
-    [],
+    [persist, run.cards, settings.playlistId],
   )
 
-  const setAnswer = useCallback(
-    (text: string) => {
-      run.current.answer = text
-      rerender()
+  const finish = useCallback(() => {
+    releaseAwake()
+    stopSpeaking()
+    setRun({ ...IDLE })
+    void (async () => {
+      // 記録を書き終えてから同期する。順番を崩すと1枚古い記録が送られる。
+      await persist(run.cards, run.cards.length)
+      if (settings.syncAuto) await sync()
+    })()
+    void (async () => {
+      if (!hasApiKey(settings)) return
+      const date = tomorrow()
+      if (await loadGenerated(date)) return
+      try {
+        await saveGenerated(date, await generateQuestions(settings, await loadAsked()))
+      } catch {
+        // 明日は種問題バンクで練習すればよい。
+      }
+    })()
+  }, [persist, run.cards, settings, sync])
+
+  const stop = useCallback(
+    (done: number) => {
+      releaseAwake()
+      stopSpeaking()
+      void persist(run.cards, done)
+      setRun({ ...IDLE })
     },
-    [rerender],
+    [persist, run.cards],
   )
 
-  const requestCorrection = useCallback(async () => {
-    const r = run.current
-    if (r.correcting || r.answer.trim().length === 0) return
-    r.correcting = true
-    r.error = null
-    rerender()
-    try {
-      const result = await correct(settings, r.focus?.text ?? '', r.answer.trim())
-      r.correction = result
-      speak(result.corrected, voice)
-    } catch (error) {
-      r.error = describeError(error)
-    } finally {
-      r.correcting = false
-      rerender()
-    }
-  }, [rerender, settings, voice])
-
-  const r = run.current
-  const remaining = Math.max(0, r.endsAt - now)
-
-  if (screen === 'settings') {
-    return (
-      <main class="screen">
-        <SettingsScreen
-          settings={settings}
-          onSave={(next) => {
-            setSettings(next)
-            void saveSettings(next)
-          }}
-          onClose={() => setScreen('drill')}
-        />
-      </main>
-    )
-  }
+  const patchSettings = useCallback((patch: Partial<Settings>) => {
+    setSettings((current) => {
+      const next = { ...current, ...patch }
+      void saveSettings(next)
+      return next
+    })
+  }, [])
 
   if (screen === 'reflex') {
     const pool = resolvePool(playlists, settings.playlistId)
@@ -469,6 +271,21 @@ export function App() {
             }
             void saveReflexRecord(record).then(setReflexRecords)
             setScreen('drill')
+          }}
+          onClose={() => setScreen('drill')}
+        />
+      </main>
+    )
+  }
+
+  if (screen === 'settings') {
+    return (
+      <main class="screen">
+        <SettingsScreen
+          settings={settings}
+          onSave={(next) => {
+            setSettings(next)
+            void saveSettings(next)
           }}
           onClose={() => setScreen('drill')}
         />
@@ -495,8 +312,18 @@ export function App() {
   }
 
   return (
-    <main class={`screen screen-${r.phase}`}>
-      {r.phase === 'idle' && (
+    <main class={run.active ? 'screen screen-cards' : 'screen'}>
+      {run.active ? (
+        <CardDrill
+          cards={run.cards}
+          windowMs={clampWindow(settings.answerWindowMs)}
+          quiet={settings.quiet}
+          speakEnabled={settings.speak}
+          onCardDone={handleCard}
+          onFinish={finish}
+          onStop={stop}
+        />
+      ) : (
         <IdleScreen
           records={records}
           reviews={reviews}
@@ -505,58 +332,14 @@ export function App() {
           prefetched={prefetched !== null}
           syncState={syncState}
           syncError={syncError}
+          reflexRecords={reflexRecords}
           onSync={() => void sync()}
           onPatchSettings={patchSettings}
           onOpenSettings={() => setScreen('settings')}
           onOpenLibrary={() => setScreen('library')}
           onOpenReflex={() => setScreen('reflex')}
-          reflexRecords={reflexRecords}
           onStart={start}
         />
-      )}
-
-      {r.phase === 'review' && (
-        <ReviewScreen
-          segments={r.segments}
-          questions={r.ten}
-          remaining={remaining}
-          onStop={stop}
-        />
-      )}
-
-      {r.phase === 'attempt' && r.focus && (
-        <AttemptScreen question={r.focus} remaining={remaining} onStop={stop} />
-      )}
-
-      {r.phase === 'model' && r.focus && (
-        <ModelScreen
-          question={r.focus}
-          answer={r.answer}
-          correcting={r.correcting}
-          correction={r.correction}
-          error={r.error}
-          canCorrect={hasApiKey(settings)}
-          remaining={remaining}
-          onAnswer={setAnswer}
-          onCorrect={requestCorrection}
-          onSpeak={() => speak(takeaway(r), voice)}
-          onDone={advance}
-          onStop={stop}
-        />
-      )}
-
-      {r.phase === 'respeak' && r.focus && (
-        <RespeakScreen
-          question={r.focus}
-          sentence={takeaway(r)}
-          round={r.round}
-          remaining={remaining}
-          onStop={stop}
-        />
-      )}
-
-      {r.phase === 'done' && (
-        <DoneScreen record={records.find((rec) => rec.date === today())} onClose={stop} />
       )}
     </main>
   )
@@ -564,315 +347,22 @@ export function App() {
 
 /* ---------- 部品 ---------- */
 
-function Ring({ progress, label, sub }: { progress: number; label: string; sub?: string }) {
-  const radius = 86
-  const circumference = 2 * Math.PI * radius
-  return (
-    <div class="ring">
-      <svg viewBox="0 0 200 200" aria-hidden="true">
-        <circle class="ring-track" cx="100" cy="100" r={radius} />
-        <circle
-          class="ring-fill"
-          cx="100"
-          cy="100"
-          r={radius}
-          stroke-dasharray={circumference}
-          stroke-dashoffset={circumference * (1 - progress)}
-          transform="rotate(-90 100 100)"
-        />
-      </svg>
-      <div class="ring-label">
-        <strong>{label}</strong>
-        {sub && <span>{sub}</span>}
-      </div>
-    </div>
-  )
-}
-
-function Dots({ reached }: { reached: number }) {
-  return (
-    <span class="dots" title={STAGES.map((s) => s.label).join(' → ')}>
-      {STAGES.map((stage, i) => (
-        <i key={stage.id} class={i < reached ? 'dot on' : 'dot'} />
-      ))}
-    </span>
-  )
-}
-
-function StageHead({
-  title,
-  hint,
-  remaining,
-  total,
-  onStop,
-  showClock = true,
-}: {
-  title: string
-  hint: string
-  remaining: number
-  total: number
-  onStop: () => void
-  showClock?: boolean
-}) {
-  return (
-    <header class="stage-head">
-      <div
-        class="bar"
-        style={{ transform: `scaleX(${Math.min(1, Math.max(0, remaining / total))})` }}
-      />
-      <div class="stage-head-row">
-        <div>
-          <h2>{title}</h2>
-          <p class="hint">{hint}</p>
-        </div>
-        <div class="stage-head-right">
-          {showClock && <span class="clock">{formatClock(remaining)}</span>}
-          <button class="stop" onClick={onStop} aria-label="セッションを終了">
-            終了
-          </button>
-        </div>
-      </div>
-    </header>
-  )
-}
-
-/* ---------- 工程2: 復習 ---------- */
-
-function ReviewScreen({
-  segments,
-  questions,
-  remaining,
-  onStop,
-}: {
-  segments: Segment[]
-  questions: Question[]
-  remaining: number
-  onStop: () => void
-}) {
-  const elapsed = Math.max(0, REVIEW_MS - remaining)
-  const { index, local } = segmentAt(segments, elapsed)
-  const seg = segments[index]
-  const cards = segments.filter((s) => s.kind === 'card').length
-
-  if (seg.kind === 'warmup') {
-    const i = Math.floor(local / WARMUP_PER_QUESTION_MS) % Math.max(1, questions.length)
+/** その日の進み具合。カード形式より前の記録は工程数しか持っていない。 */
+function Progress({ record }: { record: SessionRecord }) {
+  if (record.cardsTotal) {
+    const done = record.cards ?? 0
     return (
-      <div class="stage">
-        <StageHead
-          title="復習"
-          hint="考えず口だけ動かす"
-          remaining={remaining}
-          total={REVIEW_MS}
-          onStop={onStop}
-        />
-        <div class="card">
-          <p class="card-kicker">音読 {i + 1}</p>
-          <p class="card-question">{questions[i]?.text}</p>
-          <p class="card-ja">{questions[i]?.ja}</p>
-        </div>
-      </div>
+      <span class="progress">
+        <span class="progress-bar">
+          <i style={{ transform: `scaleX(${done / record.cardsTotal})` }} />
+        </span>
+        <span class="progress-text">
+          {done} / {record.cardsTotal}
+        </span>
+      </span>
     )
   }
-
-  const item = seg.item as ReviewItem
-  const revealed = local >= REVIEW_RECALL_MS
-  return (
-    <div class="stage">
-      <StageHead
-        title={`復習 ${index + 1}/${cards}`}
-        hint={revealed ? '答えを見て読む' : '見ずに思い出して言う'}
-        remaining={remaining}
-        total={REVIEW_MS}
-        onStop={onStop}
-      />
-      <div class={revealed ? 'card revealed' : 'card'}>
-        <p class="card-kicker">{item.createdAt} の持ち帰り</p>
-        <p class="card-question">{item.question}</p>
-        {item.questionJa && <p class="card-ja">{item.questionJa}</p>}
-        {revealed ? (
-          <p class="card-answer">{item.sentence}</p>
-        ) : (
-          <p class="card-veil">思い出して、声に出す</p>
-        )}
-      </div>
-    </div>
-  )
-}
-
-/* ---------- 工程3: 挑戦 ---------- */
-
-function AttemptScreen({
-  question,
-  remaining,
-  onStop,
-}: {
-  question: Question
-  remaining: number
-  onStop: () => void
-}) {
-  return (
-    <div class="stage stage-answer">
-      <StageHead
-        title="挑戦"
-        hint="言えなければ日本語でいい"
-        remaining={remaining}
-        total={ATTEMPT_MS}
-        onStop={onStop}
-        showClock={false}
-      />
-      <p class="big-question">{question.text}</p>
-      <p class="big-question-ja">{question.ja}</p>
-      <Ring progress={remaining / ATTEMPT_MS} label={formatClock(remaining)} sub="まず自力で" />
-      {/* 一時停止も「次へ」も置かない。45秒は必ず経過する。 */}
-    </div>
-  )
-}
-
-/* ---------- 工程4: 手本 ---------- */
-
-function ModelScreen({
-  question,
-  answer,
-  correcting,
-  correction,
-  error,
-  canCorrect,
-  remaining,
-  onAnswer,
-  onCorrect,
-  onSpeak,
-  onDone,
-  onStop,
-}: {
-  question: Question
-  answer: string
-  correcting: boolean
-  correction: Correction | null
-  error: string | null
-  canCorrect: boolean
-  remaining: number
-  onAnswer: (text: string) => void
-  onCorrect: () => void
-  onSpeak: () => void
-  onDone: () => void
-  onStop: () => void
-}) {
-  const shown = correction?.corrected ?? question.model
-  return (
-    <div class="stage">
-      <StageHead
-        title="手本"
-        hint={correction ? '直った文' : '1文目は真似、2文目は自分のことに'}
-        remaining={remaining}
-        total={MODEL_MS}
-        onStop={onStop}
-      />
-      <div class="write">
-        <p class="picked-question">
-          {question.text}
-          <span class="picked-question-ja">{question.ja}</span>
-        </p>
-
-        <div class="model-answer">
-          <p class="corrected-text">{shown}</p>
-          {speechSupported() && (
-            <button class="ghost small" onClick={onSpeak}>
-              もう一度聞く
-            </button>
-          )}
-        </div>
-
-        {correction && correction.fixes.length > 0 && (
-          <ul class="fixes">
-            {correction.fixes.map((fix, i) => (
-              <li key={i}>
-                <s>{fix.was}</s> → <b>{fix.now}</b>
-                <span> {fix.why}</span>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        {canCorrect && !correction && (
-          <>
-            <textarea
-              rows={3}
-              placeholder="自分が言おうとしたこと（任意）。書けば直してもらえる。"
-              value={answer}
-              onInput={(e) => onAnswer((e.target as HTMLTextAreaElement).value)}
-            />
-            <button
-              class="ghost"
-              onClick={onCorrect}
-              disabled={correcting || answer.trim().length === 0}
-            >
-              {correcting ? '添削中…' : '自分の文を添削する'}
-            </button>
-          </>
-        )}
-
-        {error && <p class="error">{error}　手本のまま進みます</p>}
-        <p class="note">この文は明日・3日後・7日後・21日後に質問として戻ってくる。</p>
-        <button class="primary" onClick={onDone}>
-          言い直しへ
-        </button>
-      </div>
-    </div>
-  )
-}
-
-/* ---------- 工程5: 言い直し ---------- */
-
-function RespeakScreen({
-  question,
-  sentence,
-  round,
-  remaining,
-  onStop,
-}: {
-  question: Question
-  sentence: string
-  round: number
-  remaining: number
-  onStop: () => void
-}) {
-  const total = RESPEAK_ROUNDS_MS[round]
-  // 足場は急に外さず、全表示 → 最初の3語 → 非表示 と段階的に減らす。
-  const scaffold = RESPEAK_SCAFFOLD[round] ?? 'none'
-  const words = sentence.split(/\s+/)
-  const hint =
-    scaffold === 'full'
-      ? '手本を見ながら言う'
-      : scaffold === 'partial'
-        ? '書き出しだけ見て、続きは自分で'
-        : '見ずに言い切る。2文目は自分のことで'
-  return (
-    <div class="stage stage-answer">
-      <StageHead
-        title={`言い直し ${round + 1}/${RESPEAK_ROUNDS_MS.length}`}
-        hint={hint}
-        remaining={remaining}
-        total={total}
-        onStop={onStop}
-        showClock={false}
-      />
-      <p class="big-question">{question.text}</p>
-      <p class="big-question-ja">{question.ja}</p>
-      {scaffold === 'full' && <p class="respeak-model">{sentence}</p>}
-      {scaffold === 'partial' && (
-        <p class="respeak-model">
-          {words.slice(0, PARTIAL_WORDS).join(' ')}
-          <span class="fade-rest"> …</span>
-        </p>
-      )}
-      {scaffold === 'none' && <p class="respeak-model hidden-text">見ずに言う</p>}
-      <Ring
-        progress={remaining / total}
-        label={formatClock(remaining)}
-        sub={`${round + 2}回目`}
-      />
-    </div>
-  )
+  return <span class="progress-text old">旧形式 · 工程 {record.reached}</span>
 }
 
 /* ---------- 待機・完了 ---------- */
@@ -914,6 +404,7 @@ function IdleScreen({
   const selected = findPlaylist(playlists, settings.playlistId)
   const emptySelected = !isUsable(selected)
   const reflexMedian = reflexRecords[0] ? sessionMedian(reflexRecords[0].attempts) : null
+  const windowSec = Math.round(clampWindow(settings.answerWindowMs) / 1000)
   const todayRecord = records.find((r) => r.date === today())
   const options = allPlaylists(playlists)
   return (
@@ -925,7 +416,10 @@ function IdleScreen({
             設定
           </button>
         </div>
-        <p class="sub">復習 → 挑戦 → 手本 → 言い直し · {formatClock(TOTAL_MS)}</p>
+        <p class="sub">
+          質問 → 声に出す → 意味と答え方 · 1枚 {Math.round(clampWindow(settings.answerWindowMs) / 1000)}秒 ·{' '}
+          {CARDS_PER_SESSION}枚
+        </p>
       </header>
 
       <div class="picker">
@@ -977,6 +471,23 @@ function IdleScreen({
       </div>
       {syncError && <p class="error">{syncError}</p>}
 
+      <div class="window-row">
+        <span>答える時間</span>
+        <input
+          type="range"
+          min={MIN_WINDOW_MS / 1000}
+          max={MAX_WINDOW_MS / 1000}
+          step={1}
+          value={windowSec}
+          onInput={(e) =>
+            onPatchSettings({
+              answerWindowMs: Number((e.target as HTMLInputElement).value) * 1000,
+            })
+          }
+        />
+        <b>{windowSec}秒</b>
+      </div>
+
       <button class="secondary" onClick={onOpenReflex}>
         <span>反射 — 何秒で声が出るか測る</span>
         {reflexMedian !== null && <b>{formatLatency(reflexMedian)}</b>}
@@ -989,35 +500,11 @@ function IdleScreen({
           {records.slice(0, 14).map((record) => (
             <li key={record.date}>
               <span class="log-date">{record.date.slice(5).replace('-', '/')}</span>
-              <Dots reached={record.reached} />
-              <span class="log-note">
-                {record.reached === 5 ? '完了' : `${STAGES[record.reached - 1]?.label ?? '—'}まで`}
-              </span>
+              <Progress record={record} />
             </li>
           ))}
         </ul>
       </section>
-    </div>
-  )
-}
-
-function DoneScreen({
-  record,
-  onClose,
-}: {
-  record: SessionRecord | undefined
-  onClose: () => void
-}) {
-  return (
-    <div class="done">
-      <h1>おつかれさま</h1>
-      <Dots reached={record?.reached ?? 5} />
-      <p class="checklist-line">{CHECKLIST_LABEL}</p>
-      {record?.rewrite && <p class="done-rewrite">{record.rewrite}</p>}
-      <p class="note">明日また質問として出る。</p>
-      <button class="primary" onClick={onClose}>
-        閉じる
-      </button>
     </div>
   )
 }

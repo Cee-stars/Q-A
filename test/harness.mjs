@@ -63,9 +63,29 @@ export async function launch({ time, fakeAudio } = {}) {
   })
   if (time) await page.clock.install({ time: new Date(time) })
 
+  /**
+   * カード形式のセッションを最後まで流す。
+   * stopAfter を渡すとその枚数で「終了」する。
+   * 既定では各カードを時間切れまで置くので、答え方が出て復習に積まれる。
+   */
+  const runSession = async ({ cards = 8, stopAfter = null, windowMs = 5_000 } = {}) => {
+    await page.getByRole('button', { name: /開始/ }).click()
+    await page.locator('.card-body').waitFor()
+    for (let i = 1; i <= cards; i++) {
+      if (stopAfter !== null && i > stopAfter) {
+        await page.getByRole('button', { name: '終了' }).click()
+        return
+      }
+      await page.clock.runFor(windowMs + 200)
+      await page.getByRole('button', { name: i === cards ? '終わる' : '次へ' }).click()
+    }
+    await page.getByRole('button', { name: /開始/ }).waitFor()
+  }
+
   return {
     page,
     base,
+    runSession,
     text: (sel) => page.locator(sel).innerText(),
     shot: (name) => page.screenshot({ path: `${process.env.SHOTS ?? 'test/shots'}/${name}.png` }),
     close: async () => {

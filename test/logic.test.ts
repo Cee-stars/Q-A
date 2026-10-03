@@ -2,16 +2,14 @@ import assert from 'node:assert/strict'
 import { BANK, DAILY_COUNT, DAILY_MIX, pickDaily, pickFocus } from '../src/questions'
 import { recentQuestionIds, streak, today, SessionRecord } from '../src/storage'
 import {
-  ATTEMPT_MS,
-  MODEL_MS,
-  PARTIAL_WORDS,
-  RESPEAK_ROUNDS_MS,
-  RESPEAK_SCAFFOLD,
-  REVIEW_MS,
-  REVIEW_SLOTS,
-  TOTAL_MS,
-  reachedFor,
-} from '../src/session'
+  buildCards,
+  CARDS_PER_SESSION,
+  clampWindow,
+  DEFAULT_WINDOW_MS,
+  MAX_WINDOW_MS,
+  MIN_WINDOW_MS,
+  reviewIdsIn,
+} from '../src/cards'
 import {
   addQuestionTo,
   allPlaylists,
@@ -43,29 +41,18 @@ import {
   INTERVALS,
   isGraduated,
   ReviewItem,
-  selectForReview,
 } from '../src/review'
 
 /* --- 仕様の数字 --- */
 
-assert.equal(TOTAL_MS, 240_000, '合計は4分でなければならない')
-assert.ok(TOTAL_MS <= 480_000, '8分を超えている')
-assert.equal(REVIEW_MS, REVIEW_SLOTS * 20_000)
-assert.equal(reachedFor('idle'), 0)
-assert.equal(reachedFor('done'), 5)
+/* --- 答える時間の幅 --- */
 
-// 挑戦は短く。45秒の沈黙は効果を増やさず士気だけ削る。
-assert.ok(ATTEMPT_MS <= 20_000, '挑戦が長すぎる')
-assert.ok(MODEL_MS >= ATTEMPT_MS, '手本を受け取る時間が挑戦より短い')
-
-// 言い直しは回を追うごとに短くなり、足場は段階的に外れる
-assert.equal(RESPEAK_ROUNDS_MS.length, 3)
-for (let i = 1; i < RESPEAK_ROUNDS_MS.length; i++) {
-  assert.ok(RESPEAK_ROUNDS_MS[i] < RESPEAK_ROUNDS_MS[i - 1], '回を追うごとに短くなっていない')
-}
-assert.deepEqual(RESPEAK_SCAFFOLD, ['full', 'partial', 'none'], '足場の外し方が段階的でない')
-assert.equal(RESPEAK_SCAFFOLD.length, RESPEAK_ROUNDS_MS.length, '回数と足場の数が合っていない')
-assert.ok(PARTIAL_WORDS > 0 && PARTIAL_WORDS < 6, '部分表示の語数が極端')
+assert.equal(clampWindow(5_000), 5_000)
+assert.equal(clampWindow(500), MIN_WINDOW_MS, '1秒より短くできてしまう')
+assert.equal(clampWindow(99_000), MAX_WINDOW_MS, '10秒より長くできてしまう')
+assert.equal(clampWindow(Number.NaN), DEFAULT_WINDOW_MS, '壊れた値で落ちる')
+assert.equal(clampWindow(3_400), 3_000, '秒に丸めていない')
+assert.ok(MIN_WINDOW_MS === 1_000 && MAX_WINDOW_MS === 10_000, '利用者が言った幅と違う')
 
 /* --- 問題バンク --- */
 
@@ -198,61 +185,16 @@ const mk = (id: string, due: string, reviews = 0, playlistId?: string): ReviewIt
   id, question: `Q${id}`, sentence: `S${id}`, createdAt: due, reviews, due, playlistId,
 })
 
-// 期限が来たものを、遅れている順に取る
-const pool = [mk('a', '2026-09-11'), mk('b', '2026-09-09'), mk('c', '2026-09-10'), mk('d', '2026-09-20')]
-const picked = selectForReview(pool, '2026-09-11', 4)
-assert.deepEqual(picked.map((i) => i.id), ['b', 'c', 'a'], '遅れている順になっていない')
-assert.ok(!picked.some((i) => i.id === 'd'), '未来の項目を出している')
-assert.equal(dueCount(pool, '2026-09-11'), 3)
-
-// 枠に上限がある
-assert.equal(selectForReview(pool, '2026-09-11', 2).length, 2)
-
-// 期限が足りなければ卒業済みで埋め、枠を遊ばせない
-const withGrads = [...pool, mk('g1', '2026-08-01', INTERVALS.length), mk('g2', '2026-08-05', INTERVALS.length)]
-const filled = selectForReview(withGrads, '2026-09-11', 4)
-assert.equal(filled.length, 4, '枠が埋まっていない')
-assert.equal(filled[3].id, 'g1', '卒業済みは古い順に入れる')
-// 同じ項目を二度出さない
-assert.equal(new Set(filled.map((i) => i.id)).size, filled.length, '同じ項目が重複している')
-
-// 履歴が無い日でも落ちない
-assert.deepEqual(selectForReview([], '2026-09-11', 4), [])
-
-/* --- 復習は、いま使っている束のものだけ --- */
-
+// 束ごとの数え方。他の束のぶんは黙って消さず、別に数える。
 {
   const mixed = [
     mk('own1', '2026-09-10', 0, 'pl-online'),
     mk('own2', '2026-09-11', 0, 'pl-online'),
     mk('other', '2026-09-09', 0, 'pl-chat'),
-    mk('legacy', '2026-09-08'), // 束の印が無い古い記録
+    mk('legacy', '2026-09-08'),
   ]
-
-  // 印の無い項目は種問題のものとして扱う
   assert.equal(homeOf(mixed[3]), 'seed', '印の無い項目の扱いが違う')
   assert.equal(homeOf(mixed[0]), 'pl-online')
-
-  const picked = selectForReview(mixed, '2026-09-11', 4, 'pl-online')
-  assert.deepEqual(picked.map((i) => i.id), ['own1', 'own2'], '別の束の質問が混ざった')
-  assert.ok(!picked.some((i) => i.id === 'other'), '他の束の項目が出た')
-  assert.ok(!picked.some((i) => i.id === 'legacy'), '印の無い項目が別の束に出た')
-
-  // 種問題を選んでいるときは、印の無い古い記録が出る
-  assert.deepEqual(
-    selectForReview(mixed, '2026-09-11', 4, 'seed').map((i) => i.id),
-    ['legacy'],
-    '古い記録が種問題側で出てこない',
-  )
-
-  // 枠が余っても、他の束の卒業済みで埋めない
-  const withGrad = [...mixed, mk('gradOther', '2026-08-01', INTERVALS.length, 'pl-chat')]
-  assert.ok(
-    !selectForReview(withGrad, '2026-09-11', 4, 'pl-online').some((i) => i.id === 'gradOther'),
-    '余った枠を他の束で埋めた',
-  )
-
-  // 数え方も束ごと。他の束のぶんは黙って消さず、別に数える。
   assert.equal(dueCount(mixed, '2026-09-11', 'pl-online'), 2)
   assert.equal(dueCount(mixed, '2026-09-11'), 4, '全体の数が合わない')
   assert.equal(dueElsewhere(mixed, '2026-09-11', 'pl-online'), 2, '他の束の残りを数えていない')
@@ -269,7 +211,9 @@ assert.deepEqual(selectForReview([], '2026-09-11', 4), [])
 }
 
 // 1日1項目増える定常状態で、枠が需要に足りているか
-assert.equal(INTERVALS.length, REVIEW_SLOTS, '1日あたりの復習需要と枠数が釣り合っていない')
+// 1日1項目increaseするとして、1項目あたり INTERVALS.length 回。
+// カードの枚数がそれを下回ると、復習が永久に溜まる。
+assert.ok(CARDS_PER_SESSION >= INTERVALS.length, '復習の需要にカード枚数が足りない')
 
 /* --- 記録 --- */
 
@@ -527,6 +471,53 @@ function attempt(latencyMs: number | null, suspicious = false): ReflexAttempt {
     { date: '2026-10-03', ms: 1000 },
     { date: '2026-10-01', ms: 1500 },
   ], '測れなかった日を混ぜている')
+}
+
+/* --- カードの組み立て --- */
+
+{
+  const qs = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      id: `q${i}`, text: `Q${i}?`, ja: `質問${i}`, model: 'A. B.', level: 'easy' as const,
+    }))
+
+  // 期限の来た復習を先に置く。後ろに回すと、途中でやめた日に復習だけ落ちる。
+  const due = [mk('r1', '2026-09-30', 0, 'seed'), mk('r2', '2026-10-01', 0, 'seed')]
+  const cards = buildCards(qs(10), due, '2026-10-03', 'seed')
+  assert.equal(cards.length, CARDS_PER_SESSION, '枚数が違う')
+  assert.deepEqual(cards.slice(0, 2).map((c) => c.kind), ['review', 'review'], '復習が先頭に来ていない')
+  assert.equal(cards[0].reviewId, 'r1', '遅れている順になっていない')
+  assert.ok(cards.slice(2).every((c) => c.kind === 'question'), '後半が新しい質問でない')
+  assert.deepEqual(reviewIdsIn(cards), ['r1', 'r2'])
+
+  // 復習カードは、前回の自分の答えを持つ
+  assert.equal(cards[0].answer, 'Sr1', '復習の答えが前回の持ち帰りでない')
+  // 新しい質問のカードは、手本を持つ
+  assert.equal(cards[2].answer, 'A. B.', '質問カードに手本が入っていない')
+
+  // 別の束の復習は混ざらない
+  const other = [mk('x', '2026-09-30', 0, 'pl-online')]
+  assert.deepEqual(
+    reviewIdsIn(buildCards(qs(10), other, '2026-10-03', 'seed')),
+    [],
+    '別の束の復習が混ざった',
+  )
+
+  // 卒業済みと、まだ期限の来ていないものは出さない
+  const notYet = [mk('g', '2026-08-01', INTERVALS.length, 'seed'), mk('f', '2026-12-01', 0, 'seed')]
+  assert.deepEqual(reviewIdsIn(buildCards(qs(10), notYet, '2026-10-03', 'seed')), [])
+
+  // 復習が多い日は、復習だけで埋まってもよい（間隔を崩さないほうを優先）
+  const many = Array.from({ length: 12 }, (_, i) =>
+    mk(`m${i}`, '2026-09-20', 0, 'seed'),
+  )
+  const packed = buildCards(qs(10), many, '2026-10-03', 'seed')
+  assert.equal(packed.length, CARDS_PER_SESSION)
+  assert.ok(packed.every((c) => c.kind === 'review'), '復習が溜まった日に新しい質問を混ぜた')
+
+  // 質問が少ない束でも落ちない
+  assert.equal(buildCards(qs(3), [], '2026-10-03', 'seed').length, 3)
+  assert.equal(buildCards([], [], '2026-10-03', 'seed').length, 0)
 }
 
 console.log('logic: all assertions passed')

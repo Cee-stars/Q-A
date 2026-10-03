@@ -1,6 +1,6 @@
-// 4分のセッションを、時計を偽装して一気に通す。
-// 検証するのは「仕様どおりの時間で工程が進み、言えなかった日でも持ち帰りが残り、
-// それが後日ちゃんと質問として戻り、途中で止めても記録が残る」こと。
+// カード形式のドリルを通しで確かめる。
+// 見るのは「意味と答え方が伏せてあること」「時間切れで答え方が出ること」
+// 「答え方を見た質問が復習に積まれ、見なかった復習が次の間隔へ進むこと」。
 import assert from 'node:assert/strict'
 import { launch } from './harness.mjs'
 
@@ -10,114 +10,93 @@ const DAY2 = '2026-09-12T09:00:00'
 const { page, base, text, shot, close } = await launch({ time: DAY1 })
 await page.goto(base)
 
-// --- 待機画面 ---
 await page.getByRole('button', { name: /開始/ }).waitFor()
-assert.match(await text('.log h2'), /質問応答（復習→挑戦→手本→言い直し）/)
-assert.match(await text('.picker'), /種問題/, 'プレイリストの選択が出ていない')
+assert.match(await text('.log h2'), /質問応答（カード）/)
+assert.match(await text('.sub'), /質問 → 声に出す → 意味と答え方/, '新しい形式が説明されていない')
+assert.match(await text('.window-row'), /答える時間/, '答える時間を変えられない')
 await shot('1-idle')
 
-/* =========================================================
-   1日目: 復習する材料がまだ無いので、工程2は質問の音読になる
-   ========================================================= */
+/* --- 1枚目: 伏せてある --- */
 
 await page.getByRole('button', { name: /開始/ }).click()
-await page.locator('.card').waitFor()
-assert.equal(await text('.stage-head h2'), '復習')
-assert.match(await text('.card-kicker'), /音読 1/, '履歴が無い日は音読で埋まるはず')
-assert.match(await text('.card-ja'), /[ぁ-んァ-ン一-龥]/, '音読カードに日本語が出ていない')
-const firstWarmup = await text('.card-question')
-await shot('2-review-warmup')
+await page.locator('.card-body').waitFor()
+assert.match(await text('.stage-head h2'), /1 \/ 8/, 'カードの枚数が出ていない')
 
-await page.clock.runFor(6_200)
-assert.notEqual(await text('.card-question'), firstWarmup, '6秒で次の質問に進んでいない')
+const first = await text('.big-question')
+assert.ok(first.length > 0, '質問が出ていない')
+assert.equal(await page.locator('.big-question-ja').count(), 0, '意味が最初から見えている')
+assert.equal(await page.locator('.answer-text').count(), 0, '答え方が最初から見えている')
+assert.equal(await page.getByRole('button', { name: '意味を表示' }).count(), 1)
+assert.equal(await page.getByRole('button', { name: '答え方を表示' }).count(), 1)
+await shot('2-card-hidden')
 
-// --- 工程3: 挑戦（20秒・自力） ---
-await page.clock.runFor(74_000)
-assert.equal(await text('.stage-head h2'), '挑戦', '工程3へ進んでいない')
-assert.match(await text('.hint'), /日本語でいい/, '日本語で答えてよいと伝えていない')
-assert.equal(await page.locator('button:has-text("一時停止")').count(), 0, '一時停止ボタンが存在する')
-const asked = await text('.big-question')
-const askedJa = await text('.big-question-ja')
-assert.match(askedJa, /[ぁ-んァ-ン一-龥]/, '挑戦に日本語が出ていない')
-// 秒表示は刻みの位置で1秒ぶれる。確かめたいのは45秒ではなく20秒だということ。
-assert.match(await text('.ring-label'), /0:(19|20)/, '挑戦が20秒になっていない')
-await shot('3-attempt')
+// 意味は自分で開ける
+await page.getByRole('button', { name: '意味を表示' }).click()
+assert.match(await text('.big-question-ja'), /[ぁ-んァ-ン一-龥]/, '意味が日本語で出ていない')
+assert.equal(await page.locator('.answer-text').count(), 0, '意味を開けたら答え方まで出た')
+await shot('3-meaning-shown')
 
-// --- 工程4: 手本。何も書かなくても必ず渡される ---
-await page.clock.runFor(20_500)
-assert.equal(await text('.stage-head h2'), '手本')
-const model = await text('.corrected-text')
-assert.ok(model.length > 0, '手本が空')
-assert.ok((model.match(/[.!?]/g) ?? []).length >= 2, '手本が1文しかない')
-assert.ok((await text('.picked-question')).includes(asked), '手本の質問が挑戦と違う')
-assert.match(await text('.hint'), /2文目は自分のことに/, '丸暗記を防ぐ指示が出ていない')
-await shot('4-model')
+/* --- 時間切れで答え方がひとりでに出る --- */
 
-// --- 工程5: 言い直し。足場が 全表示 → 書き出しだけ → 非表示 と外れる ---
-await page.getByRole('button', { name: '言い直しへ' }).click()
-assert.equal(await text('.stage-head h2'), '言い直し 1/3')
-assert.equal(await text('.respeak-model'), model, '1回目に手本が出ていない')
-assert.match(await text('.ring-label'), /0:(34|35)/)
-await shot('5-respeak-full')
+await page.clock.runFor(5_200)
+await page.locator('.answer-text').waitFor()
+const answer = await text('.answer-text')
+assert.ok(answer.length > 0, '時間切れでも答え方が出ない')
+assert.match(await text('.hint'), /答え方を見る/)
+await shot('4-answer-revealed')
 
-await page.clock.runFor(35_500)
-assert.equal(await text('.stage-head h2'), '言い直し 2/3')
-const partial = await text('.respeak-model')
-assert.ok(partial.length < model.length, '2回目で足場が減っていない')
-assert.ok(model.startsWith(partial.replace(/\s*…\s*$/, '')), '2回目が手本の書き出しになっていない')
-assert.match(await text('.ring-label'), /0:(24|25)/)
-await shot('6-respeak-partial')
+// この質問は「言えなかった」ので、復習に積まれるはず
+await page.getByRole('button', { name: '次へ' }).click()
+assert.match(await text('.stage-head h2'), /2 \/ 8/, '次のカードへ進まない')
+assert.equal(await page.locator('.answer-text').count(), 0, '次のカードで伏せ直していない')
+assert.equal(await page.locator('.big-question-ja').count(), 0, '次のカードで意味が開いたまま')
 
-await page.clock.runFor(25_500)
-assert.equal(await text('.stage-head h2'), '言い直し 3/3')
-assert.ok(!(await text('.respeak-model')).includes(model.slice(0, 10)), '3回目で手本が消えていない')
-assert.match(await text('.ring-label'), /0:(19|20)/)
+/* --- 自力で答えたカードは積まれない --- */
 
-// --- 完了 ---
-await page.clock.runFor(20_500)
-await page.locator('.done').waitFor()
-assert.equal(await page.locator('.done .dot.on').count(), 5, '5工程すべてが点灯していない')
-assert.equal(await text('.done-rewrite'), model, '何も書かなかった日の持ち帰りが手本になっていない')
-await shot('7-done')
+const second = await text('.big-question')
+await page.getByRole('button', { name: '次へ' }).click()
 
-await page.locator('.done .primary').click()
-await page.reload()
-await page.locator('.log li').first().waitFor()
-assert.equal(await page.locator('.log li').first().locator('.dot.on').count(), 5, '記録が残っていない')
+// 残りを時間切れで流す
+for (let i = 3; i <= 8; i++) {
+  await page.clock.runFor(5_200)
+  await page.getByRole('button', { name: i === 8 ? '終わる' : '次へ' }).click()
+}
 
-/* =========================================================
-   2日目: 一言も書けなくても、手本が質問として戻ってくる
-   ========================================================= */
+await page.getByRole('button', { name: /開始/ }).waitFor()
+// 記録の保存は非同期なので、画面に出るまで待つ
+await page.waitForFunction(
+  () => /8 \/ 8/.test(document.querySelector('.log li')?.textContent ?? ''),
+  null,
+  { timeout: 5_000 },
+)
+await shot('5-done')
+
+/* --- 翌日: 答え方を見た質問が復習として戻る --- */
 
 await page.clock.setSystemTime(new Date(DAY2))
 await page.reload()
 await page.getByRole('button', { name: /開始/ }).waitFor()
-assert.match(await text('.idle-meta'), /復習 1/, '復習が期限を迎えていない')
-await shot('8-idle-due')
+assert.match(await text('.idle-meta'), /復習 \d/, '復習が積まれていない')
 
 await page.getByRole('button', { name: /開始/ }).click()
-await page.locator('.card').waitFor()
-assert.equal(await text('.stage-head h2'), '復習 1/1', '昨日の項目が復習に出ていない')
-assert.equal(await text('.card-question'), asked, '復習カードの質問が昨日の問題ではない')
-assert.equal(await text('.card-ja'), askedJa, '復習カードに日本語が引き継がれていない')
-assert.equal(await page.locator('.card-answer').count(), 0, '思い出す前に答えが見えている')
-await shot('9-review-recall')
+await page.locator('.card-body').waitFor()
+assert.match(await text('.hint'), /の持ち帰り/, '復習カードが先頭に来ていない')
+assert.equal(await text('.big-question'), first, '復習に出た質問が違う')
+assert.notEqual(await text('.big-question'), second, '自力で答えた質問まで積まれている')
+await shot('6-review-card')
 
-await page.clock.runFor(12_500)
-assert.equal(await text('.card-answer'), model, '12秒後に昨日の持ち帰りが出ていない')
-await shot('10-review-reveal')
+// 自力で答えれば（答え方を見なければ）次の間隔へ進み、同じ質問は出直さない
+await page.getByRole('button', { name: '次へ' }).click()
+assert.notEqual(await text('.big-question'), first, '同じ復習が二度続けて出た')
 
-await page.clock.runFor(8_000)
-assert.match(await text('.card-kicker'), /音読/, '残り枠が音読で埋まっていない')
-
-// 復習を終えた項目は次の間隔まで期限が伸びる（同じ日に二度出ない）
-await page.clock.runFor(61_000)
-assert.equal(await text('.stage-head h2'), '挑戦')
+// 途中で終了しても、そこまでが残る
 await page.getByRole('button', { name: '終了' }).click()
-await page.locator('.log li').first().waitFor()
-assert.equal(await page.locator('.log li').first().locator('.dot.on').count(), 3, '中断時の到達工程が違う')
-assert.match(await page.locator('.log li').first().innerText(), /挑戦まで/)
-assert.doesNotMatch(await text('.idle-meta'), /復習 \d/, '復習済みの項目が同じ日にまた期限を迎えている')
+// 1枚だけ終えて止めたので 1/8
+await page.waitForFunction(
+  () => /1 \/ 8/.test(document.querySelector('.log li')?.textContent ?? ''),
+  null,
+  { timeout: 5_000 },
+)
 
 await close()
 console.log('smoke: all assertions passed')

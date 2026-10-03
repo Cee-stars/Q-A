@@ -31,15 +31,20 @@ export function emptySnapshot(): Snapshot {
 
 /* ---------- 合流 ---------- */
 
-/** 記録は「到達した工程が多いほう」を残す。並んだら後から書いたほう。 */
+/** その日どこまで進んだか。カード形式の記録と、それ以前の工程の記録が混ざる。 */
+function progressOf(record: SessionRecord): number {
+  return record.cardsTotal ? (record.cards ?? 0) : record.reached
+}
+
+/** 記録は「進んだほう」を残す。並んだら後から書いたほう。 */
 function mergeRecords(a: SessionRecord[], b: SessionRecord[]): SessionRecord[] {
   const byDate = new Map<string, SessionRecord>()
   for (const record of [...a, ...b]) {
     const seen = byDate.get(record.date)
     if (
       !seen ||
-      record.reached > seen.reached ||
-      (record.reached === seen.reached && record.updatedAt > seen.updatedAt)
+      progressOf(record) > progressOf(seen) ||
+      (progressOf(record) === progressOf(seen) && record.updatedAt > seen.updatedAt)
     ) {
       byDate.set(record.date, record)
     }

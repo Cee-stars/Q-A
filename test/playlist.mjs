@@ -126,16 +126,18 @@ assert.deepEqual(await counts(), { 雑談フレーズ: 1, オンライン英会�
 await page.getByRole('button', { name: '戻る' }).click()
 await page.getByRole('button', { name: /開始/ }).waitFor()
 
+/** 1枚目を時間切れにして（＝復習に積まれる）、残りを流す。 */
 const runOnce = async () => {
   await page.getByRole('button', { name: /開始/ }).click()
-  await page.locator('.card').waitFor()
-  await page.clock.runFor(80_500)
+  await page.locator('.card-body').waitFor()
   const asked = await text('.big-question')
-  await page.clock.runFor(20_500)
-  await page.getByRole('button', { name: '言い直しへ' }).click()
-  await page.clock.runFor(81_000)
-  await page.locator('.done').waitFor()
-  await page.locator('.done .primary').click()
+  // 束によって枚数が違う。見出しの「1 / N」から実際の枚数を読む。
+  const total = Number((await text('.stage-head h2')).split('/')[1].trim())
+  for (let i = 1; i <= total; i++) {
+    await page.clock.runFor(5_200)
+    await page.getByRole('button', { name: i === total ? '終わる' : '次へ' }).click()
+  }
+  await page.getByRole('button', { name: /開始/ }).waitFor()
   return asked
 }
 
@@ -160,31 +162,24 @@ await page.getByRole('button', { name: /開始/ }).waitFor()
 await selectPlaylist('オンライン英会話')
 
 // 雑談フレーズの持ち帰りは「他の束」に数えられ、この束の復習には出ない
-assert.match(await text('.idle-meta'), /他の束に 1/, '他の束の復習を数えていない')
+assert.match(await text('.idle-meta'), /他の束に \d/, '他の束の復習を数えていない')
 assert.doesNotMatch(await text('.idle-meta'), /復習 \d/, 'この束に無い復習を数えている')
 await shot('p4-scoped-counts')
 
 await page.getByRole('button', { name: /開始/ }).click()
-await page.locator('.card').waitFor()
-assert.match(
-  await text('.card-kicker'),
-  /音読/,
-  '別の束の持ち帰りが復習に出ている',
-)
-assert.ok(
-  !(await text('.card')).includes(chatQuestion),
-  '雑談フレーズの質問がオンライン英会話の復習に混ざった',
-)
+await page.locator('.card-body').waitFor()
+assert.doesNotMatch(await text('.hint'), /の持ち帰り/, '別の束の持ち帰りが復習に出ている')
+assert.notEqual(await text('.big-question'), chatQuestion, '別の束の質問が混ざった')
 await shot('p5-no-cross-playlist')
 
 // 雑談フレーズに戻せば、ちゃんと復習に出る
 await page.getByRole('button', { name: '終了' }).click()
 await selectPlaylist('雑談フレーズ')
-assert.match(await text('.idle-meta'), /復習 1/, '自分の束の復習が出てこない')
+assert.match(await text('.idle-meta'), /復習 \d/, '自分の束の復習が出てこない')
 await page.getByRole('button', { name: /開始/ }).click()
-await page.locator('.card').waitFor()
-assert.match(await text('.card-kicker'), /の持ち帰り/, '自分の束の持ち帰りが復習に出ない')
-assert.equal(await text('.card-question'), chatQuestion, '復習に出た質問が違う')
+await page.locator('.card-body').waitFor()
+assert.match(await text('.hint'), /の持ち帰り/, '自分の束の持ち帰りが復習に出ない')
+assert.equal(await text('.big-question'), chatQuestion, '復習に出た質問が違う')
 await page.getByRole('button', { name: '終了' }).click()
 
 // 以降はライブラリ画面で続ける
@@ -202,15 +197,13 @@ assert.match(await text('.idle-meta'), /0問/, '空の束であることを知�
 await shot('p2-empty-warning')
 
 await page.getByRole('button', { name: /開始/ }).click()
-await page.locator('.card').waitFor()
-await page.clock.runFor(80_500)
-assert.equal(await text('.stage-head h2'), '挑戦', '空の束を選ぶとセッションが壊れる')
-assert.ok((await text('.big-question')).length > 0, '空の束でその日の1問が出ない')
-assert.ok((await text('.big-question-ja')).length > 0, '空の束で日本語が出ない')
-
-await page.clock.runFor(20_500)
-assert.equal(await text('.stage-head h2'), '手本')
-assert.ok((await text('.corrected-text')).length > 0, '空の束で手本が出ない')
+await page.locator('.card-body').waitFor()
+assert.ok((await text('.big-question')).length > 0, '空の束でカードが出ない')
+await page.getByRole('button', { name: '意味を表示' }).click()
+assert.ok((await text('.big-question-ja')).length > 0, '空の束で意味が出ない')
+await page.clock.runFor(5_200)
+await page.locator('.answer-text').waitFor()
+assert.ok((await text('.answer-text')).length > 0, '空の束で答え方が出ない')
 
 await close()
 console.log('playlist: all assertions passed')
