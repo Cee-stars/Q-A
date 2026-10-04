@@ -8,19 +8,12 @@
 
 import type { Question } from './questions'
 import { homeOf, isGraduated, type ReviewItem } from './review'
-
-/** 1回に出すカードの枚数。 */
-export const CARDS_PER_SESSION = 8
-
-/** 答える時間の範囲。利用者が「1秒から10秒でもいい」と言った幅。 */
-export const MIN_WINDOW_MS = 1_000
-export const MAX_WINDOW_MS = 10_000
-export const DEFAULT_WINDOW_MS = 5_000
-
-export function clampWindow(ms: number): number {
-  if (!Number.isFinite(ms)) return DEFAULT_WINDOW_MS
-  return Math.min(MAX_WINDOW_MS, Math.max(MIN_WINDOW_MS, Math.round(ms / 1000) * 1000))
-}
+import {
+  DAILY_QUESTION_POOL,
+  MAX_CARDS_PER_DAY,
+  orderByBest,
+  type QuestionProgress,
+} from './endurance'
 
 export interface Card {
   kind: 'question' | 'review'
@@ -52,15 +45,18 @@ function fromReview(item: ReviewItem): Card {
 }
 
 /**
- * その日のカードを組む。**期限が来た復習を先に置く。**
- * 後ろに回すと、途中でやめた日に復習だけが落ちて、間隔が静かに崩れる。
+ * その日のカードを組む。
+ *   1. 期限が来た復習を先に置く（後ろに回すと、途中でやめた日に復習だけ落ちる）
+ *   2. 残りは、30秒に届いていない質問を**記録が長い順**に
+ *   3. 枠が余ったら同じ並びを繰り返す（全部が30秒に届くまで出し続けるため）
  */
 export function buildCards(
   questions: Question[],
   reviews: ReviewItem[],
+  progress: QuestionProgress[],
   date: string,
   playlistId: string,
-  limit = CARDS_PER_SESSION,
+  limit = MAX_CARDS_PER_DAY,
 ): Card[] {
   const due = reviews
     .filter((i) => homeOf(i) === playlistId && !isGraduated(i) && i.due <= date)
@@ -68,11 +64,18 @@ export function buildCards(
     .slice(0, limit)
     .map(fromReview)
 
-  const fresh = questions.map(fromQuestion).slice(0, Math.max(0, limit - due.length))
-  return [...due, ...fresh]
+  // その日に扱う種類を絞る。絞らないと全部を1回ずつ触って終わり、30秒に届かない。
+  const pending = orderByBest(questions, progress, playlistId).slice(0, DAILY_QUESTION_POOL)
+  const room = Math.max(0, limit - due.length)
+  if (pending.length === 0 || room === 0) return due
+
+  // 同じ順で何周もする。1問を連続で叩くのではなく、一巡してから戻る。
+  const cycled: Card[] = []
+  for (let i = 0; i < room; i++) cycled.push(fromQuestion(pending[i % pending.length]))
+  return [...due, ...cycled]
 }
 
-/** 復習として出たカードの項目 id。終わったあと間隔を進めるのに使う。 */
-export function reviewIdsIn(cards: Card[]): string[] {
-  return cards.filter((c) => c.reviewId).map((c) => c.reviewId as string)
+/** その質問が30秒に届いたら、まだ残っている同じ質問のカードを落とす。 */
+export function dropMastered(queue: Card[], question: string): Card[] {
+  return queue.filter((c) => !(c.kind === 'question' && c.question === question))
 }

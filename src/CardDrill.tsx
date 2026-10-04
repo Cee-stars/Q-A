@@ -1,125 +1,114 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks'
 import type { Card } from './cards'
+import { formatDuration, TARGET_MS } from './endurance'
 import { speak, stopSpeaking, supported as speechSupported } from './speech'
-import { cueDone, cueNext } from './cues'
+import { cueNext } from './cues'
 
 /**
- * カード形式のドリル。
- *   質問を見る → 答える → 詰まったら意味と答え方を出す
- *
- * **「答え方」は答える時間が終わるまで伏せておく。**
- * いつでも押せると、押して読むだけになり、産出の練習でなく音読になる。
- * 時間切れで自動的に出るので、詰まったまま放置されることはない。
+ * カード1枚。
+ *   質問が出た瞬間から測りはじめ、**ストップを押すまで止めない**。
+ *   30秒は目標であって打ち切りではない。超えたぶんもそのまま記録する。
  */
 export function CardDrill({
-  cards,
-  windowMs,
+  card,
+  position,
+  total,
+  best,
   quiet,
   speakEnabled,
-  onCardDone,
-  onFinish,
+  onDone,
   onStop,
 }: {
-  cards: Card[]
-  windowMs: number
+  card: Card
+  position: number
+  total: number
+  /** この質問のこれまでの最長。無ければ 0。 */
+  best: number
   quiet: boolean
   speakEnabled: boolean
-  /**
-   * 1枚終えるたびに呼ぶ。usedHelp は「答え方を見たか」。
-   * 自力で言えたかどうかの唯一の手がかりなので、復習の間隔はここで決まる。
-   */
-  onCardDone: (card: Card, usedHelp: boolean, done: number) => void
-  onFinish: () => void
-  onStop: (done: number) => void
+  /** ストップを押した時点の長さと、答え方を見たかどうか。 */
+  onDone: (card: Card, durationMs: number, usedHelp: boolean) => void
+  onStop: () => void
 }) {
-  const [index, setIndex] = useState(0)
   const [showJa, setShowJa] = useState(false)
   const [showAnswer, setShowAnswer] = useState(false)
-  const [remaining, setRemaining] = useState(windowMs)
+  const [elapsed, setElapsed] = useState(0)
+  const [stopped, setStopped] = useState<number | null>(null)
   const startedAt = useRef(Date.now())
-  /** 時間切れで出たぶんも「見た」に数える。自力で言えたかが知りたいので。 */
   const sawAnswer = useRef(false)
+  const reachedCue = useRef(false)
 
-  const card = cards[index]
   const voice = { quiet, enabled: speakEnabled }
 
-  /**
-   * 伏せ直しは、次へ進めるのと同じ更新でやる。
-   * 効果の中でやると、新しいカードを一度描いたあとで伏せ直すことになり、
-   * 前のカードの答えが一瞬だけ見える。
-   */
-  const reset = useCallback(() => {
+  // カードが変わったら、伏せ直して測り直す。
+  useEffect(() => {
     setShowJa(false)
     setShowAnswer(false)
-    setRemaining(windowMs)
+    setElapsed(0)
+    setStopped(null)
     startedAt.current = Date.now()
     sawAnswer.current = false
-  }, [windowMs])
-
-  // 読み上げだけは描いたあとで。
-  useEffect(() => {
-    if (card) speak(card.question, voice)
+    reachedCue.current = false
+    speak(card.question, voice)
     return () => stopSpeaking()
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [index])
+  }, [card.key, position])
 
-  // 答える時間。尽きたら答え方をひとりでに出す。詰まったまま終わらせない。
   useEffect(() => {
+    if (stopped !== null) return
     const id = window.setInterval(() => {
-      const left = Math.max(0, windowMs - (Date.now() - startedAt.current))
-      setRemaining(left)
-      if (left === 0) {
-        setShowAnswer((was) => {
-          if (!was) cueNext({ quiet })
-          return true
-        })
-        sawAnswer.current = true
+      const now = Date.now() - startedAt.current
+      setElapsed(now)
+      // 30秒に届いた瞬間だけ知らせる。画面を見ていなくても分かるように。
+      if (!reachedCue.current && now >= TARGET_MS) {
+        reachedCue.current = true
+        cueNext({ quiet })
       }
     }, 100)
     return () => window.clearInterval(id)
-  }, [index, quiet, windowMs])
+  }, [quiet, stopped, card.key, position])
+
+  const stopTimer = useCallback(() => {
+    const ms = Date.now() - startedAt.current
+    setStopped(ms)
+    setElapsed(ms)
+    stopSpeaking()
+  }, [])
 
   const next = useCallback(() => {
-    const done = index + 1
-    onCardDone(card, sawAnswer.current, done)
-    if (done >= cards.length) {
-      cueDone({ quiet })
-      onFinish()
-    } else {
-      reset()
-      setIndex(done)
-    }
-  }, [card, cards.length, index, onCardDone, onFinish, quiet, reset])
+    onDone(card, stopped ?? Date.now() - startedAt.current, sawAnswer.current)
+  }, [card, onDone, stopped])
 
-  if (!card) return null
-
-  const expired = remaining === 0
-  const seconds = Math.ceil(remaining / 1000)
+  const shown = stopped ?? elapsed
+  const reached = shown >= TARGET_MS
+  const isReview = card.kind === 'review'
 
   return (
     <div class="stage card-drill">
       <header class="stage-head">
         <div
           class="bar"
-          style={{ transform: `scaleX(${Math.min(1, Math.max(0, remaining / windowMs))})` }}
+          style={{ transform: `scaleX(${Math.min(1, shown / TARGET_MS)})` }}
         />
         <div class="stage-head-row">
           <div>
             <h2>
-              {index + 1} / {cards.length}
+              {position} / {total}
             </h2>
             <p class="hint">
-              {card.kind === 'review' ? `${card.since} の持ち帰り` : expired ? '答え方を見る' : '声に出して答える'}
+              {isReview ? `${card.since} の持ち帰り` : best > 0 ? `これまで ${formatDuration(best)}` : 'はじめて'}
             </p>
           </div>
-          <div class="stage-head-right">
-            <span class={expired ? 'clock out' : 'clock'}>{expired ? '—' : seconds}</span>
-            <button class="stop" onClick={() => onStop(index)}>
-              終了
-            </button>
-          </div>
+          <button class="stop" onClick={onStop}>
+            終了
+          </button>
         </div>
       </header>
+
+      <div class="timer-row">
+        <strong class={reached ? 'timer reached' : 'timer'}>{formatDuration(shown)}</strong>
+        <span class="timer-target">目標 {formatDuration(TARGET_MS)}</span>
+      </div>
 
       <div class="card-body">
         <p class="big-question">{card.question}</p>
@@ -134,7 +123,7 @@ export function CardDrill({
 
         {showAnswer ? (
           <div class="answer-box">
-            <p class="answer-label">{card.kind === 'review' ? '前回の自分の答え' : '答え方'}</p>
+            <p class="answer-label">{isReview ? '前回の自分の答え' : '答え方'}</p>
             <p class="answer-text">{card.answer}</p>
             {speechSupported() && (
               <button class="ghost small" onClick={() => speak(card.answer, voice)}>
@@ -155,9 +144,22 @@ export function CardDrill({
         )}
       </div>
 
-      <button class="primary" onClick={next}>
-        {index + 1 >= cards.length ? '終わる' : '次へ'}
-      </button>
+      {stopped === null ? (
+        <button class="primary big" onClick={stopTimer}>
+          ストップ
+        </button>
+      ) : (
+        <div class="stopped">
+          <p class={reached ? 'stopped-note reached' : 'stopped-note'}>
+            {reached
+              ? `30秒に到達。この質問はもう出ません`
+              : `あと ${formatDuration(TARGET_MS - stopped)}`}
+          </p>
+          <button class="primary" onClick={next}>
+            次へ
+          </button>
+        </div>
+      )}
     </div>
   )
 }

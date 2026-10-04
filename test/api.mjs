@@ -7,7 +7,7 @@ import { launch } from './harness.mjs'
 const DAY1 = '2026-09-11T09:00:00'
 const DAY2 = '2026-09-12T09:00:00'
 
-const { page, base, text, shot, close } = await launch({ time: DAY1 })
+const { page, base, text, shot, close, runSession } = await launch({ time: DAY1 })
 
 /** API に届いたリクエスト本文を控えておく。 */
 const sent = []
@@ -76,11 +76,11 @@ await page.getByRole('button', { name: /開始/ }).waitFor()
 await page.getByRole('button', { name: /開始/ }).click()
 await page.locator('.card-body').waitFor()
 const asked = await text('.big-question')
-// 答え方を見ずに進める。見ると復習に積まれ、翌日が復習だけで埋まって
+await page.getByRole('button', { name: '終了' }).click()
+await page.getByRole('button', { name: /開始/ }).waitFor()
+// 答え方を見ずに終える。見ると復習に積まれ、翌日が復習だけで埋まって
 // 生成された問題が出る余地が無くなる。
-for (let i = 1; i <= 8; i++) {
-  await page.getByRole('button', { name: i === 8 ? '終わる' : '次へ' }).click()
-}
+await runSession({ holdMs: 31_000 })
 await page.getByRole('button', { name: /開始/ }).waitFor()
 
 await page.waitForFunction(() => true)
@@ -105,20 +105,21 @@ await page.getByRole('button', { name: /開始/ }).click()
 await page.locator('.card-body').waitFor()
 
 // 先頭は昨日ぶんの復習。そこを抜けると生成された問題が出る。
-const total = Number((await text('.stage-head h2')).split('/')[1].trim())
 let sawGenerated = false
-for (let i = 1; i <= total; i++) {
+for (let i = 1; i <= 12; i++) {
   if (/Generated question/.test(await text('.big-question'))) {
     sawGenerated = true
     await page.getByRole('button', { name: '意味を表示' }).click()
     assert.match(await text('.big-question-ja'), /生成された質問/, '生成された問題に日本語が無い')
-    await page.clock.runFor(5_200)
-    await page.locator('.answer-text').waitFor()
+    await page.getByRole('button', { name: '答え方を表示' }).click()
     assert.match(await text('.answer-text'), /model answer/i, '生成された問題に手本が無い')
     break
   }
-  await page.clock.runFor(5_200)
-  await page.getByRole('button', { name: i === total ? '終わる' : '次へ' }).click()
+  await page.clock.runFor(31_000)
+  await page.getByRole('button', { name: 'ストップ' }).click()
+  if (!(await page.getByRole('button', { name: '次へ' }).count())) break
+  await page.getByRole('button', { name: '次へ' }).click()
+  if (await page.getByRole('button', { name: /開始/ }).count()) break
 }
 assert.ok(sawGenerated, '生成された問題が使われていない')
 await shot('a3-generated')
@@ -131,8 +132,7 @@ await page.reload()
 await page.getByRole('button', { name: /開始/ }).click()
 await page.locator('.card-body').waitFor()
 assert.ok((await text('.big-question')).length > 0, '生成が落ちるとカードが出ない')
-await page.clock.runFor(5_200)
-await page.locator('.answer-text').waitFor()
+await page.getByRole('button', { name: '答え方を表示' }).click()
 assert.ok((await text('.answer-text')).length > 0, '生成が落ちると答え方が出ない')
 await shot('a4-offline')
 

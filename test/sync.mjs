@@ -46,23 +46,27 @@ async function device(label, { cards }) {
   await d.page.getByRole('button', { name: '保存' }).click()
   await d.page.getByRole('button', { name: /開始/ }).waitFor()
 
-  await d.runSession(cards === 8 ? {} : { stopAfter: cards })
+  // 1枚目で答え方を見ておく。復習項目ができ、同期に乗るものが増える。
+  await d.runSession(cards === null ? { revealFirst: true } : { stopAfter: cards, revealFirst: true })
+  // 枚数は束と到達状況で変わるので、記録された数をそのまま読む
   await d.page.waitForFunction(
-    (want) => new RegExp(`${want} / 8`).test(document.querySelector('.log li')?.textContent ?? ''),
-    cards,
-    { timeout: 5_000 },
+    () => /\d+ \/ \d+/.test(document.querySelector('.log li')?.textContent ?? ''),
+    null,
+    { timeout: 10_000 },
   )
-  return d
+  const done = Number((await d.text('.log li')).match(/(\d+) \/ \d+/)[1])
+  return { ...d, done }
 }
 
 /* --- 1台目: 最後まで通す（到達5）。完了時に自動で同期される --- */
 
-const a = await device('A', { cards: 8 })
+const a = await device('A', { cards: null })
 await a.page.waitForFunction(() => !document.body.innerText.includes('同期中'))
 assert.ok(gist.files['qa-drill-data.json'], '自分のファイル名で置かれていない')
 const stored = JSON.parse(gist.files['qa-drill-data.json'].content)
 assert.equal(stored.version, 1)
-assert.equal(stored.records[0].cards, 8, '置き場に完了が届いていない')
+assert.ok(stored.records[0].cards >= 1, '置き場に記録が届いていない')
+assert.equal(stored.records[0].cards, a.done, '置き場の枚数が端末と違う')
 assert.ok(stored.reviews.length >= 1, '持ち帰りが同期されていない')
 assert.ok(!JSON.stringify(stored).includes(TOKEN), 'トークンが置き場に漏れている')
 assert.ok(!JSON.stringify(stored).includes('apiKey'), 'APIキーが置き場に漏れている')
@@ -74,16 +78,17 @@ gist.files['sunkan-data.json'] = { content: '{"other":"app"}' }
 
 /* --- 2台目: 途中で止める（到達3）。合流しても1台目の完了が勝つ --- */
 
-const b = await device('B', { cards: 3 })
+const b = await device('B', { cards: 1 })
 await b.page.getByRole('button', { name: /同期/ }).click()
+// 合流で、進んだほう（A）の記録に置き換わる
 await b.page.waitForFunction(
-  () => /8 \/ 8/.test(document.querySelector('.log li')?.textContent ?? ''),
-  null,
+  (want) => new RegExp(`${want} / `).test(document.querySelector('.log li')?.textContent ?? ''),
+  a.done,
   { timeout: 10_000 },
 )
 
 const after = JSON.parse(gist.files['qa-drill-data.json'].content)
-assert.equal(after.records[0].cards, 8, '途中で止めた端末が、完了の記録を巻き戻した')
+assert.equal(after.records[0].cards, a.done, '途中で止めた端末が、進んだ記録を巻き戻した')
 assert.equal(gist.files['sunkan-data.json'].content, '{"other":"app"}', '同居アプリのファイルを壊した')
 assert.ok(seen.get > 0 && seen.patch > 0, '読み書きが片方しか起きていない')
 assert.deepEqual([...seen.auth], [`token ${TOKEN}`], '認証ヘッダが想定と違う')

@@ -68,16 +68,25 @@ export async function launch({ time, fakeAudio } = {}) {
    * stopAfter を渡すとその枚数で「終了」する。
    * 既定では各カードを時間切れまで置くので、答え方が出て復習に積まれる。
    */
-  const runSession = async ({ cards = 8, stopAfter = null, windowMs = 5_000 } = {}) => {
+  /**
+   * カードを流す。holdMs だけ測ってからストップを押す。
+   * 30秒以上にすると、その質問は到達済みになって待ち行列から消える。
+   */
+  const runSession = async ({ cards = 12, stopAfter = null, holdMs = 31_000, revealFirst = false } = {}) => {
     await page.getByRole('button', { name: /開始/ }).click()
     await page.locator('.card-body').waitFor()
+    if (revealFirst) await page.getByRole('button', { name: '答え方を表示' }).click()
     for (let i = 1; i <= cards; i++) {
       if (stopAfter !== null && i > stopAfter) {
         await page.getByRole('button', { name: '終了' }).click()
         return
       }
-      await page.clock.runFor(windowMs + 200)
-      await page.getByRole('button', { name: i === cards ? '終わる' : '次へ' }).click()
+      await page.clock.runFor(holdMs)
+      await page.getByRole('button', { name: 'ストップ' }).click()
+      if (await page.getByRole('button', { name: '次へ' }).count()) {
+        await page.getByRole('button', { name: '次へ' }).click()
+      }
+      if (await page.getByRole('button', { name: /開始/ }).count()) return
     }
     await page.getByRole('button', { name: /開始/ }).waitFor()
   }

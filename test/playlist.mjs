@@ -3,7 +3,19 @@
 import assert from 'node:assert/strict'
 import { launch } from './harness.mjs'
 
-const { page, base, text, shot, close } = await launch({ time: '2026-09-20T09:00:00' })
+const { page, base, text, shot, close, runSession } = await launch({ time: '2026-09-20T09:00:00' })
+
+/** いまのセッションを最後まで流す。 */
+const finishCards = async () => {
+  for (let i = 0; i < 20; i++) {
+    await page.clock.runFor(31_000)
+    await page.getByRole('button', { name: 'ストップ' }).click()
+    if (!(await page.getByRole('button', { name: '次へ' }).count())) break
+    await page.getByRole('button', { name: '次へ' }).click()
+    if (await page.getByRole('button', { name: /開始/ }).count()) break
+  }
+  await page.getByRole('button', { name: /開始/ }).waitFor({ timeout: 10_000 })
+}
 await page.goto(base)
 
 const makePlaylist = async (name) => {
@@ -126,18 +138,13 @@ assert.deepEqual(await counts(), { 雑談フレーズ: 1, オンライン英会�
 await page.getByRole('button', { name: '戻る' }).click()
 await page.getByRole('button', { name: /開始/ }).waitFor()
 
-/** 1枚目を時間切れにして（＝復習に積まれる）、残りを流す。 */
+/** 1枚目で答え方を見て（＝言えなかった扱いで復習に積まれる）、残りを流す。 */
 const runOnce = async () => {
   await page.getByRole('button', { name: /開始/ }).click()
   await page.locator('.card-body').waitFor()
   const asked = await text('.big-question')
-  // 束によって枚数が違う。見出しの「1 / N」から実際の枚数を読む。
-  const total = Number((await text('.stage-head h2')).split('/')[1].trim())
-  for (let i = 1; i <= total; i++) {
-    await page.clock.runFor(5_200)
-    await page.getByRole('button', { name: i === total ? '終わる' : '次へ' }).click()
-  }
-  await page.getByRole('button', { name: /開始/ }).waitFor()
+  await page.getByRole('button', { name: '答え方を表示' }).click()
+  await finishCards()
   return asked
 }
 
@@ -201,8 +208,7 @@ await page.locator('.card-body').waitFor()
 assert.ok((await text('.big-question')).length > 0, '空の束でカードが出ない')
 await page.getByRole('button', { name: '意味を表示' }).click()
 assert.ok((await text('.big-question-ja')).length > 0, '空の束で意味が出ない')
-await page.clock.runFor(5_200)
-await page.locator('.answer-text').waitFor()
+await page.getByRole('button', { name: '答え方を表示' }).click()
 assert.ok((await text('.answer-text')).length > 0, '空の束で答え方が出ない')
 
 await close()

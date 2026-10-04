@@ -11,6 +11,7 @@ import type { ReviewItem } from './review'
 import type { Question } from './questions'
 import type { Playlist } from './playlists'
 import type { ReflexRecord } from './reflex'
+import type { QuestionProgress } from './endurance'
 
 const RECORDS_KEY = 'qa:records'
 const SETTINGS_KEY = 'qa:settings'
@@ -186,6 +187,18 @@ export async function saveReflexRecord(record: ReflexRecord): Promise<ReflexReco
 
 export async function saveReflex(records: ReflexRecord[]): Promise<void> {
   await set(REFLEX_KEY, records)
+}
+
+// --- 質問ごとの到達時間 ---
+
+const PROGRESS_KEY = 'qa:progress'
+
+export async function loadProgress(): Promise<QuestionProgress[]> {
+  return (await get<QuestionProgress[]>(PROGRESS_KEY)) ?? []
+}
+
+export async function saveProgress(progress: QuestionProgress[]): Promise<void> {
+  await set(PROGRESS_KEY, progress)
 }
 
 // --- プレイリスト ---

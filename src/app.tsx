@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'preact/hooks'
 import { pickDaily, type Level, type Question } from './questions'
+import { buildCards, dropMastered, type Card } from './cards'
 import {
-  buildCards,
-  CARDS_PER_SESSION,
-  clampWindow,
-  MAX_WINDOW_MS,
-  MIN_WINDOW_MS,
-  type Card,
-} from './cards'
+  bestOf,
+  MAX_CARDS_PER_DAY,
+  masteryOf,
+  record as recordProgress,
+  TARGET_MS,
+  type QuestionProgress,
+} from './endurance'
 import { CardDrill } from './CardDrill'
 import { SEED_PLAYLIST_ID } from './playlists'
 import {
@@ -39,6 +40,7 @@ import {
   loadAsked,
   loadGenerated,
   loadPlaylists,
+  loadProgress,
   loadRecords,
   loadReflex,
   loadReviews,
@@ -47,6 +49,7 @@ import {
   saveAsked,
   saveGenerated,
   savePlaylists,
+  saveProgress,
   saveRecord,
   saveRecords,
   saveReflexRecord,
@@ -69,11 +72,14 @@ const CHECKLIST_LABEL = '質問応答（カード）'
 
 interface Run {
   active: boolean
-  cards: Card[]
+  /** 残りのカード。30秒に届いた質問はここから抜ける。 */
+  queue: Card[]
   done: number
+  /** 始めた時点の予定枚数。進み具合の分母。 */
+  planned: number
 }
 
-const IDLE: Run = { active: false, cards: [], done: 0 }
+const IDLE: Run = { active: false, queue: [], done: 0, planned: 0 }
 
 export function App() {
   const [run, setRun] = useState<Run>(IDLE)
@@ -84,6 +90,7 @@ export function App() {
   const [prefetched, setPrefetched] = useState<Question[] | null>(null)
   const [screen, setScreen] = useState<'drill' | 'settings' | 'library' | 'reflex'>('drill')
   const [reflexRecords, setReflexRecords] = useState<ReflexRecord[]>([])
+  const [progress, setProgress] = useState<QuestionProgress[]>([])
   const [syncState, setSyncState] = useState<'idle' | 'running' | 'ok' | 'error'>('idle')
   const [syncError, setSyncError] = useState<string | null>(null)
 
@@ -94,6 +101,7 @@ export function App() {
     void loadSettings().then(setSettings)
     void loadGenerated(today()).then(setPrefetched)
     void loadReflex().then(setReflexRecords)
+    void loadProgress().then(setProgress)
   }, [])
 
   const sync = useCallback(async () => {
@@ -145,12 +153,12 @@ export function App() {
    * 同期の前には必ず待つこと。待たないと、1枚古い記録を置き場に送る。
    */
   const persist = useCallback(
-    (cards: Card[], done: number): Promise<void> => {
+    (cards: Card[], done: number, total: number): Promise<void> => {
       const record: SessionRecord = {
         date: today(),
         reached: 0,
         cards: done,
-        cardsTotal: cards.length,
+        cardsTotal: total,
         questionIds: [],
         answeredIds: [],
         pickedId: null,
@@ -174,77 +182,97 @@ export function App() {
     const ten = usePrefetched
       ? (prefetched as Question[])
       : pickDaily(date, pool.questions, recentQuestionIds(records))
-    const cards = buildCards(ten, reviews, date, settings.playlistId)
-    setRun({ active: true, cards, done: 0 })
-    persist(cards, 0)
+    const cards = buildCards(ten, reviews, progress, date, settings.playlistId)
+    setRun({ active: true, queue: cards, done: 0, planned: cards.length })
+    void persist(cards, 0, cards.length)
     void loadAsked().then((asked) => saveAsked([...asked, ...ten.map((q) => q.text)]))
-  }, [persist, playlists, prefetched, records, reviews, settings.playlistId])
+  }, [persist, playlists, prefetched, progress, records, reviews, settings.playlistId])
+
+  /** セッションを終えたあとの後片付け。記録を書き終えてから同期する。 */
+  const finishSession = useCallback(
+    (done: number, planned: number) => {
+      void (async () => {
+        await persist([], done, planned)
+        if (settings.syncAuto) await sync()
+      })()
+      void (async () => {
+        if (!hasApiKey(settings)) return
+        const date = tomorrow()
+        if (await loadGenerated(date)) return
+        try {
+          await saveGenerated(date, await generateQuestions(settings, await loadAsked()))
+        } catch {
+          // 明日は種問題バンクで練習すればよい。
+        }
+      })()
+    },
+    [persist, settings, sync],
+  )
 
   /**
-   * 1枚終えるごとに、復習の予定を動かす。
-   *   - 新しい質問で答え方を見た → 言えなかったので、復習に積む
-   *   - 復習カードを自力で言えた → 次の間隔へ進める
-   *   - 復習カードでまた見た → 進めない。間隔を進めると、言えないまま卒業する
+   * 1枚終えるごとに。
+   *   - かかった時間を記録し、最長だけ残す
+   *   - 30秒に届いたら、待ち行列に残っている同じ質問を落とす
+   *   - 復習カードは、答え方を見ずに終えたときだけ次の間隔へ進める
    */
   const handleCard = useCallback(
-    (card: Card, usedHelp: boolean, done: number) => {
-      void persist(run.cards, done)
+    (card: Card, durationMs: number, usedHelp: boolean) => {
       const date = today()
 
       if (card.kind === 'question') {
-        if (!usedHelp) return
+        setProgress((current) => {
+          const next = recordProgress(current, settings.playlistId, card.question, durationMs, date)
+          void saveProgress(next)
+          return next
+        })
+        if (usedHelp) {
+          setReviews((current) => {
+            if (current.some((i) => i.question === card.question && !isGraduated(i))) return current
+            const next = [
+              ...current,
+              createItem(card.question, card.ja, card.answer, date, settings.playlistId),
+            ]
+            void saveReviews(next)
+            return next
+          })
+        }
+      } else if (!usedHelp) {
         setReviews((current) => {
-          // 同じ質問が未卒業で残っているなら、二重に積まない。
-          if (current.some((i) => i.question === card.question && !isGraduated(i))) return current
-          const next = [
-            ...current,
-            createItem(card.question, card.ja, card.answer, date, settings.playlistId),
-          ]
+          const next = current.map((i) => (i.id === card.reviewId ? advanceItem(i, date) : i))
           void saveReviews(next)
           return next
         })
-        return
       }
 
-      if (usedHelp) return
-      setReviews((current) => {
-        const next = current.map((i) => (i.id === card.reviewId ? advanceItem(i, date) : i))
-        void saveReviews(next)
-        return next
+      setRun((current) => {
+        const rest = current.queue.slice(1)
+        // 30秒に届いた質問は、この先に残っていても出さない。
+        const trimmed =
+          card.kind === 'question' && durationMs >= TARGET_MS
+            ? dropMastered(rest, card.question)
+            : rest
+        const done = current.done + 1
+        void persist(current.queue, done, current.planned)
+        if (trimmed.length === 0) {
+          releaseAwake()
+          stopSpeaking()
+          finishSession(done, current.planned)
+          return { ...IDLE }
+        }
+        return { ...current, queue: trimmed, done }
       })
     },
-    [persist, run.cards, settings.playlistId],
+    [finishSession, persist, settings.playlistId],
   )
-
-  const finish = useCallback(() => {
-    releaseAwake()
-    stopSpeaking()
-    setRun({ ...IDLE })
-    void (async () => {
-      // 記録を書き終えてから同期する。順番を崩すと1枚古い記録が送られる。
-      await persist(run.cards, run.cards.length)
-      if (settings.syncAuto) await sync()
-    })()
-    void (async () => {
-      if (!hasApiKey(settings)) return
-      const date = tomorrow()
-      if (await loadGenerated(date)) return
-      try {
-        await saveGenerated(date, await generateQuestions(settings, await loadAsked()))
-      } catch {
-        // 明日は種問題バンクで練習すればよい。
-      }
-    })()
-  }, [persist, run.cards, settings, sync])
 
   const stop = useCallback(
     (done: number) => {
       releaseAwake()
       stopSpeaking()
-      void persist(run.cards, done)
+      void persist(run.queue, done, run.planned)
       setRun({ ...IDLE })
     },
-    [persist, run.cards],
+    [persist, run.planned, run.queue],
   )
 
   const patchSettings = useCallback((patch: Partial<Settings>) => {
@@ -313,15 +341,16 @@ export function App() {
 
   return (
     <main class={run.active ? 'screen screen-cards' : 'screen'}>
-      {run.active ? (
+      {run.active && run.queue[0] ? (
         <CardDrill
-          cards={run.cards}
-          windowMs={clampWindow(settings.answerWindowMs)}
+          card={run.queue[0]}
+          position={run.done + 1}
+          total={run.planned}
+          best={bestOf(progress, settings.playlistId, run.queue[0].question)?.bestMs ?? 0}
           quiet={settings.quiet}
           speakEnabled={settings.speak}
-          onCardDone={handleCard}
-          onFinish={finish}
-          onStop={stop}
+          onDone={handleCard}
+          onStop={() => stop(run.done)}
         />
       ) : (
         <IdleScreen
@@ -329,6 +358,7 @@ export function App() {
           reviews={reviews}
           playlists={playlists}
           settings={settings}
+          progress={progress}
           prefetched={prefetched !== null}
           syncState={syncState}
           syncError={syncError}
@@ -372,6 +402,7 @@ function IdleScreen({
   reviews,
   playlists,
   settings,
+  progress,
   prefetched,
   syncState,
   syncError,
@@ -387,6 +418,7 @@ function IdleScreen({
   reviews: ReviewItem[]
   playlists: Playlist[]
   settings: Settings
+  progress: QuestionProgress[]
   prefetched: boolean
   syncState: 'idle' | 'running' | 'ok' | 'error'
   syncError: string | null
@@ -404,7 +436,7 @@ function IdleScreen({
   const selected = findPlaylist(playlists, settings.playlistId)
   const emptySelected = !isUsable(selected)
   const reflexMedian = reflexRecords[0] ? sessionMedian(reflexRecords[0].attempts) : null
-  const windowSec = Math.round(clampWindow(settings.answerWindowMs) / 1000)
+  const mastery = masteryOf(selected.questions, progress, settings.playlistId)
   const todayRecord = records.find((r) => r.date === today())
   const options = allPlaylists(playlists)
   return (
@@ -417,8 +449,7 @@ function IdleScreen({
           </button>
         </div>
         <p class="sub">
-          質問 → 声に出す → 意味と答え方 · 1枚 {Math.round(clampWindow(settings.answerWindowMs) / 1000)}秒 ·{' '}
-          {CARDS_PER_SESSION}枚
+          1問 {Math.round(TARGET_MS / 1000)}秒 話せるまで · 1日 {MAX_CARDS_PER_DAY}枚まで
         </p>
       </header>
 
@@ -458,6 +489,11 @@ function IdleScreen({
             読み上げ{settings.speak ? ' ON' : ' OFF'}
           </button>
         )}
+        {mastery.total > 0 && (
+          <span class="chip flat">
+            {Math.round(TARGET_MS / 1000)}秒 到達 {mastery.mastered} / {mastery.total}
+          </span>
+        )}
         {emptySelected && <span class="chip warn">この束は0問。種問題で練習します</span>}
         {canSync(settings) && (
           <button class={syncState === 'error' ? 'chip warn' : 'chip'} onClick={onSync}>
@@ -470,23 +506,6 @@ function IdleScreen({
         {days > 0 && <span class="chip flat">{days}日連続</span>}
       </div>
       {syncError && <p class="error">{syncError}</p>}
-
-      <div class="window-row">
-        <span>答える時間</span>
-        <input
-          type="range"
-          min={MIN_WINDOW_MS / 1000}
-          max={MAX_WINDOW_MS / 1000}
-          step={1}
-          value={windowSec}
-          onInput={(e) =>
-            onPatchSettings({
-              answerWindowMs: Number((e.target as HTMLInputElement).value) * 1000,
-            })
-          }
-        />
-        <b>{windowSec}秒</b>
-      </div>
 
       <button class="secondary" onClick={onOpenReflex}>
         <span>反射 — 何秒で声が出るか測る</span>

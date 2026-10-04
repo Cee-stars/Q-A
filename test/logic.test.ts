@@ -1,15 +1,18 @@
 import assert from 'node:assert/strict'
 import { BANK, DAILY_COUNT, DAILY_MIX, pickDaily, pickFocus } from '../src/questions'
 import { recentQuestionIds, streak, today, SessionRecord } from '../src/storage'
+import { buildCards, dropMastered } from '../src/cards'
 import {
-  buildCards,
-  CARDS_PER_SESSION,
-  clampWindow,
-  DEFAULT_WINDOW_MS,
-  MAX_WINDOW_MS,
-  MIN_WINDOW_MS,
-  reviewIdsIn,
-} from '../src/cards'
+  bestOf,
+  DAILY_QUESTION_POOL,
+  isMastered,
+  MAX_CARDS_PER_DAY,
+  masteryOf,
+  orderByBest,
+  record as recordProgress,
+  TARGET_MS,
+  type QuestionProgress,
+} from '../src/endurance'
 import {
   addQuestionTo,
   allPlaylists,
@@ -45,14 +48,12 @@ import {
 
 /* --- 仕様の数字 --- */
 
-/* --- 答える時間の幅 --- */
+/* --- 30秒の目標 --- */
 
-assert.equal(clampWindow(5_000), 5_000)
-assert.equal(clampWindow(500), MIN_WINDOW_MS, '1秒より短くできてしまう')
-assert.equal(clampWindow(99_000), MAX_WINDOW_MS, '10秒より長くできてしまう')
-assert.equal(clampWindow(Number.NaN), DEFAULT_WINDOW_MS, '壊れた値で落ちる')
-assert.equal(clampWindow(3_400), 3_000, '秒に丸めていない')
-assert.ok(MIN_WINDOW_MS === 1_000 && MAX_WINDOW_MS === 10_000, '利用者が言った幅と違う')
+assert.equal(TARGET_MS, 30_000, '目標は30秒')
+assert.ok(MAX_CARDS_PER_DAY > 0 && MAX_CARDS_PER_DAY <= 20, '1日の枚数が極端')
+// 種類より枚数が多くないと、同じ質問に戻れず30秒に届かない
+assert.ok(MAX_CARDS_PER_DAY > DAILY_QUESTION_POOL, '1日のうちに同じ質問へ戻れない')
 
 /* --- 問題バンク --- */
 
@@ -213,7 +214,7 @@ const mk = (id: string, due: string, reviews = 0, playlistId?: string): ReviewIt
 // 1日1項目増える定常状態で、枠が需要に足りているか
 // 1日1項目increaseするとして、1項目あたり INTERVALS.length 回。
 // カードの枚数がそれを下回ると、復習が永久に溜まる。
-assert.ok(CARDS_PER_SESSION >= INTERVALS.length, '復習の需要にカード枚数が足りない')
+assert.ok(MAX_CARDS_PER_DAY >= INTERVALS.length, '復習の需要にカード枚数が足りない')
 
 /* --- 記録 --- */
 
@@ -473,51 +474,113 @@ function attempt(latencyMs: number | null, suspicious = false): ReflexAttempt {
   ], '測れなかった日を混ぜている')
 }
 
+/* --- 到達時間の記録 --- */
+
+const q = (text: string) => ({ id: text, text, ja: `${text}の意味`, model: 'A. B.', level: 'easy' as const })
+
+{
+  let p: QuestionProgress[] = []
+  p = recordProgress(p, 'seed', 'A?', 12_000, '2026-10-01')
+  assert.equal(bestOf(p, 'seed', 'A?')?.bestMs, 12_000)
+  assert.equal(bestOf(p, 'seed', 'A?')?.attempts, 1)
+
+  // **最長だけを残す。** 短い回で上書きすると、到達済みが出題に戻る。
+  p = recordProgress(p, 'seed', 'A?', 5_000, '2026-10-02')
+  assert.equal(bestOf(p, 'seed', 'A?')?.bestMs, 12_000, '短い記録で上書きした')
+  assert.equal(bestOf(p, 'seed', 'A?')?.attempts, 2)
+
+  p = recordProgress(p, 'seed', 'A?', 31_000, '2026-10-03')
+  assert.ok(isMastered(bestOf(p, 'seed', 'A?')), '30秒を超えても卒業しない')
+
+  // 束が違えば別の記録
+  p = recordProgress(p, 'pl-online', 'A?', 3_000, '2026-10-03')
+  assert.equal(bestOf(p, 'seed', 'A?')?.bestMs, 31_000, '束をまたいで混ざった')
+  assert.equal(bestOf(p, 'pl-online', 'A?')?.bestMs, 3_000)
+
+  assert.equal(isMastered(undefined), false, '記録の無い質問を卒業扱いにした')
+}
+
+/* --- 出題順: 30秒に届いていないものを、長い順に --- */
+
+{
+  const questions = [q('A?'), q('B?'), q('C?'), q('D?')]
+  let p: QuestionProgress[] = []
+  p = recordProgress(p, 'seed', 'A?', 5_000, '2026-10-01')
+  p = recordProgress(p, 'seed', 'B?', 25_000, '2026-10-01')
+  p = recordProgress(p, 'seed', 'C?', 30_000, '2026-10-01') // 卒業
+  // D? は未挑戦
+
+  const ordered = orderByBest(questions, p, 'seed')
+  assert.deepEqual(
+    ordered.map((x) => x.text),
+    ['B?', 'A?', 'D?'],
+    '長い順になっていない / 卒業済みが残っている',
+  )
+
+  assert.deepEqual(masteryOf(questions, p, 'seed'), { mastered: 1, total: 4 })
+
+  // 全部が30秒に届いたら、出すものが無くなる
+  let all = p
+  for (const text of ['A?', 'B?', 'D?']) all = recordProgress(all, 'seed', text, 30_000, '2026-10-02')
+  assert.deepEqual(orderByBest(questions, all, 'seed'), [], '全部到達しても出題が残る')
+  assert.deepEqual(masteryOf(questions, all, 'seed'), { mastered: 4, total: 4 })
+}
+
 /* --- カードの組み立て --- */
 
 {
-  const qs = (n: number) =>
-    Array.from({ length: n }, (_, i) => ({
-      id: `q${i}`, text: `Q${i}?`, ja: `質問${i}`, model: 'A. B.', level: 'easy' as const,
-    }))
+  const questions = [q('A?'), q('B?'), q('C?')]
+  let p: QuestionProgress[] = []
+  p = recordProgress(p, 'seed', 'A?', 5_000, '2026-10-01')
+  p = recordProgress(p, 'seed', 'B?', 20_000, '2026-10-01')
 
-  // 期限の来た復習を先に置く。後ろに回すと、途中でやめた日に復習だけ落ちる。
-  const due = [mk('r1', '2026-09-30', 0, 'seed'), mk('r2', '2026-10-01', 0, 'seed')]
-  const cards = buildCards(qs(10), due, '2026-10-03', 'seed')
-  assert.equal(cards.length, CARDS_PER_SESSION, '枚数が違う')
-  assert.deepEqual(cards.slice(0, 2).map((c) => c.kind), ['review', 'review'], '復習が先頭に来ていない')
-  assert.equal(cards[0].reviewId, 'r1', '遅れている順になっていない')
-  assert.ok(cards.slice(2).every((c) => c.kind === 'question'), '後半が新しい質問でない')
-  assert.deepEqual(reviewIdsIn(cards), ['r1', 'r2'])
-
-  // 復習カードは、前回の自分の答えを持つ
-  assert.equal(cards[0].answer, 'Sr1', '復習の答えが前回の持ち帰りでない')
-  // 新しい質問のカードは、手本を持つ
-  assert.equal(cards[2].answer, 'A. B.', '質問カードに手本が入っていない')
-
-  // 別の束の復習は混ざらない
-  const other = [mk('x', '2026-09-30', 0, 'pl-online')]
+  // 期限の来た復習が先。残りは長い順。
+  const due = [mk('r1', '2026-09-30', 0, 'seed')]
+  const cards = buildCards(questions, due, p, '2026-10-03', 'seed')
+  assert.equal(cards.length, MAX_CARDS_PER_DAY, '枚数が違う')
+  assert.equal(cards[0].kind, 'review', '復習が先頭に来ていない')
   assert.deepEqual(
-    reviewIdsIn(buildCards(qs(10), other, '2026-10-03', 'seed')),
-    [],
-    '別の束の復習が混ざった',
+    cards.slice(1, 4).map((c) => c.question),
+    ['B?', 'A?', 'C?'],
+    '長い順に並んでいない',
   )
 
-  // 卒業済みと、まだ期限の来ていないものは出さない
-  const notYet = [mk('g', '2026-08-01', INTERVALS.length, 'seed'), mk('f', '2026-12-01', 0, 'seed')]
-  assert.deepEqual(reviewIdsIn(buildCards(qs(10), notYet, '2026-10-03', 'seed')), [])
+  // 枠が余ったら同じ並びを繰り返す（全部が30秒に届くまで出し続ける）
+  assert.deepEqual(cards.slice(4, 7).map((c) => c.question), ['B?', 'A?', 'C?'], '繰り返していない')
 
-  // 復習が多い日は、復習だけで埋まってもよい（間隔を崩さないほうを優先）
-  const many = Array.from({ length: 12 }, (_, i) =>
-    mk(`m${i}`, '2026-09-20', 0, 'seed'),
+  // 質問が多い日でも、扱う種類は絞って繰り返す
+  const many = Array.from({ length: 12 }, (_, i) => q(`M${i}?`))
+  const packed = buildCards(many, [], [], '2026-10-03', 'seed')
+  assert.equal(packed.length, MAX_CARDS_PER_DAY)
+  assert.equal(
+    new Set(packed.map((c) => c.question)).size,
+    DAILY_QUESTION_POOL,
+    '1日に触る種類を絞っていない',
   )
-  const packed = buildCards(qs(10), many, '2026-10-03', 'seed')
-  assert.equal(packed.length, CARDS_PER_SESSION)
-  assert.ok(packed.every((c) => c.kind === 'review'), '復習が溜まった日に新しい質問を混ぜた')
 
-  // 質問が少ない束でも落ちない
-  assert.equal(buildCards(qs(3), [], '2026-10-03', 'seed').length, 3)
-  assert.equal(buildCards([], [], '2026-10-03', 'seed').length, 0)
+  // 1問を連続で叩かない
+  for (let i = 1; i < cards.length; i++) {
+    assert.notEqual(cards[i].question, cards[i - 1].question, '同じ質問が連続した')
+  }
+
+  // 30秒に届いた質問は、先に残っていても落ちる
+  const trimmed = dropMastered(cards, 'B?')
+  assert.ok(!trimmed.some((c) => c.kind === 'question' && c.question === 'B?'), '到達後も残っている')
+  assert.ok(trimmed.some((c) => c.question === 'A?'), '関係ない質問まで落とした')
+  assert.equal(trimmed.filter((c) => c.kind === 'review').length, 1, '復習まで落とした')
+
+  // 全部到達していれば、復習だけが残る
+  let allDone = p
+  for (const text of ['A?', 'B?', 'C?']) allDone = recordProgress(allDone, 'seed', text, 30_000, '2026-10-02')
+  const onlyReviews = buildCards(questions, due, allDone, '2026-10-03', 'seed')
+  assert.ok(onlyReviews.every((c) => c.kind === 'review'), '到達済みを出題した')
+
+  // 届いていない質問は翌日も残る（記録が消えないこと）
+  assert.equal(bestOf(p, 'seed', 'A?')?.bestMs, 5_000, '翌日に記録が引き継がれない')
+  assert.deepEqual(orderByBest(questions, p, 'seed').map((x) => x.text), ['B?', 'A?', 'C?'])
+
+  // 束が空でも落ちない
+  assert.deepEqual(buildCards([], [], p, '2026-10-03', 'seed'), [])
 }
 
 console.log('logic: all assertions passed')

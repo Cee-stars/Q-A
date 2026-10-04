@@ -1134,3 +1134,50 @@ button {
   min-width: 44px;
   text-align: right;
 }
+
+/* ---------- 経過時間 ---------- */
+
+.timer-row {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+}
+
+.timer {
+  font-size: 44px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+/* 目標に届いたら、画面を見ていなくても分かるよう色を変える */
+.timer.reached {
+  color: var(--accent-ink);
+}
+
+.timer-target {
+  font-size: 13px;
+  color: var(--dim);
+}
+
+.primary.big {
+  padding: 22px;
+  font-size: 20px;
+}
+
+.stopped {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.stopped-note {
+  margin: 0;
+  text-align: center;
+  font-size: 14px;
+  color: var(--dim);
+}
+
+.stopped-note.reached {
+  color: var(--accent-ink);
+  font-weight: 600;
+}
